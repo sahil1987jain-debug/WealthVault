@@ -1064,16 +1064,16 @@ function App(){
 
   const saveApiKey = key => { setApiKey(key); localStorage.setItem("wv_apikey",key); };
 
-  // ── Computed totals ───────────────────────────────────────────────────────
-  const totalAssets   = data.assets.reduce((s,a)=>s+a.value,0);
-  const totalLiab     = data.liabilities.reduce((s,l)=>s+l.value,0);
+  // Consolidated totals (used by LegacyTab only — Dashboard computes its own filtered totals)
+  const totalAssets   = data.assets.reduce((s,a)=>s+(a.value||0),0);
+  const totalLiab     = data.liabilities.reduce((s,l)=>s+(l.value||0),0);
   const netWorth      = totalAssets-totalLiab;
   const totalIncome   = data.income.reduce((s,i)=>{
     if(i.date){ return s+(i.amount||0); }
     const f=i.frequency||"Monthly";
     return s+(f==="Annual"?i.amount/12:f==="Quarterly"?i.amount/3:f==="One-time"?0:i.amount);
   },0);
-  const totalExpenses = data.expenses.reduce((s,e)=>s+e.amount,0);
+  const totalExpenses = data.expenses.reduce((s,e)=>s+(e.amount||0),0);
   const cashflow      = totalIncome-totalExpenses;
 
   const notify = (msg,type="success") => { setNotif({msg,type}); setTimeout(()=>setNotif(null),4000); };
@@ -1821,6 +1821,7 @@ General rules:
         const sec=item._section;
         if(!sec||!next[sec]){ console.warn("[applySmartReconcile] missing section for add:", item); return; }
         const {_section,...clean}=item;
+        if(!clean.memberId) clean.memberId="self";
         next[sec]=[...next[sec],{...clean,id:Date.now()+Math.random()+Math.random()}];
         totalAdded++;
       });
@@ -3864,21 +3865,49 @@ function MemberSelect({family, value, onChange}){
 function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpenses,cashflow,setTab,activeMember,setActiveMember}){
   const family = data.family||[{id:"self",name:"Me",relation:"Self",color:"#a78bfa"}];
 
+  // ── Filter all data by activeMember ──────────────────────────────────────
+  const filterM = items => activeMember==="all" ? items : items.filter(i=>(i.memberId||"self")===activeMember);
+  const mAssets      = filterM(data.assets);
+  const mLiab        = filterM(data.liabilities);
+  const mIncome      = filterM(data.income);
+  const mExpenses    = filterM(data.expenses);
+  const mInsurance   = filterM(data.insurance);
+
+  // ── Recompute all totals from filtered data ───────────────────────────────
+  const filteredTotalAssets   = mAssets.reduce((s,a)=>s+(a.value||0),0);
+  const filteredTotalLiab     = mLiab.reduce((s,l)=>s+(l.value||0),0);
+  const filteredNetWorth      = filteredTotalAssets - filteredTotalLiab;
+  const filteredTotalIncome   = mIncome.reduce((s,i)=>{
+    const f=i.frequency||"Monthly";
+    return s+(f==="Annual"?i.amount/12:f==="Quarterly"?i.amount/3:f==="One-time"?0:(i.amount||0));
+  },0);
+  const filteredTotalExpenses = mExpenses.reduce((s,e)=>s+(e.amount||0),0);
+  const filteredCashflow      = filteredTotalIncome - filteredTotalExpenses;
+  const filteredTotalCover    = mInsurance.reduce((s,i)=>s+(i.cover||0),0);
+
+  // Use filtered values throughout Dashboard
+  const useTotalAssets   = filteredTotalAssets;
+  const useTotalLiab     = filteredTotalLiab;
+  const useNetWorth      = filteredNetWorth;
+  const useTotalIncome   = filteredTotalIncome;
+  const useTotalExpenses = filteredTotalExpenses;
+  const useCashflow      = filteredCashflow;
+
   const currentFY = getFY();
   const [selectedFY, setSelectedFY] = useState(currentFY);
 
   // Build list of available FYs from expense/income data
   const allDates = [
-    ...data.expenses.map(e=>e.date),
-    ...data.income.map(i=>i.date),
+    ...mExpenses.map(e=>e.date),
+    ...mIncome.map(i=>i.date),
   ].filter(Boolean);
   const fySet = new Set(allDates.map(d=>getFY(d)));
   fySet.add(currentFY);
   const fyList = Array.from(fySet).sort((a,b)=>b-a);
 
   // FY-filtered expenses & income (by date)
-  const fyExpenses = data.expenses.filter(e => inFY(e.date, selectedFY));
-  const fyIncome   = data.income.filter(i => inFY(i.date, selectedFY));
+  const fyExpenses = mExpenses.filter(e => inFY(e.date, selectedFY));
+  const fyIncome   = mIncome.filter(i => inFY(i.date, selectedFY));
 
   // Monthly breakdown for selected FY
   const months = fyMonths(selectedFY);
@@ -3901,16 +3930,16 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
   const maxBar = Math.max(...monthlyData.map(m=>Math.max(m.inc,m.exp)),1);
 
   const assetGroups={};
-  data.assets.forEach(a=>{assetGroups[a.category]=(assetGroups[a.category]||0)+a.value;});
-  const totalCover=data.insurance.reduce((s,i)=>s+(i.cover||0),0);
-  const savingsRate=totalIncome>0?(((totalIncome-totalExpenses)/totalIncome)*100).toFixed(1):0;
-  const debtRatio=totalAssets>0?((totalLiab/totalAssets)*100).toFixed(1):0;
+  mAssets.forEach(a=>{assetGroups[a.category]=(assetGroups[a.category]||0)+a.value;});
+  const totalCover=mInsurance.reduce((s,i)=>s+(i.cover||0),0);
+  const savingsRate=useTotalIncome>0?(((useTotalIncome-useTotalExpenses)/useTotalIncome)*100).toFixed(1):0;
+  const debtRatio=useTotalAssets>0?((useTotalLiab/useTotalAssets)*100).toFixed(1):0;
 
   // ── Reminders (respect notification settings) ────────────────────────────
   const notifCfg = data.notifications||{insuranceRenewal:true,emiDue:true,fdMaturity:true,renewalDays:30,emiDueDays:5};
   const now = new Date();
   const reminders = [];
-  if(notifCfg.insuranceRenewal!==false) data.insurance.forEach(p=>{
+  if(notifCfg.insuranceRenewal!==false) mInsurance.forEach(p=>{
     if(!p.maturity) return;
     const days=Math.ceil((new Date(p.maturity)-now)/86400000);
     if(days>=0&&days<=(notifCfg.renewalDays||30)) reminders.push({type:"insurance",icon:"🛡",color:"#fbbf24",msg:`${p.name} renews in ${days} day${days!==1?"s":""} (${p.maturity})`,tab:"insurance"});
@@ -3923,7 +3952,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
     const days=Math.ceil((next-now)/86400000);
     if(days<=(notifCfg.emiDueDays||5)) reminders.push({type:"emi",icon:"🏦",color:"#f87171",msg:`${l.name} EMI ₹${Number(l.emi).toLocaleString("en-IN")} due in ${days} day${days!==1?"s":""}`,tab:"liabilities"});
   });
-  if(notifCfg.fdMaturity!==false) data.assets.filter(a=>a.category==="Fixed Deposits").forEach(a=>{
+  if(notifCfg.fdMaturity!==false) mAssets.filter(a=>a.category==="Fixed Deposits").forEach(a=>{
     if(!a.matDate) return;
     const days=Math.ceil((new Date(a.matDate)-now)/86400000);
     if(days>=0&&days<=30) reminders.push({type:"fd",icon:"📋",color:"#60a5fa",msg:`FD "${a.name}" matures in ${days} day${days!==1?"s":""} (${a.matDate})`,tab:"assets"});
@@ -3933,7 +3962,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
   const budgets = data.budgets||{};
   const curMonthExp = {};
   const curM=now.getMonth(), curY=now.getFullYear();
-  data.expenses.forEach(e=>{
+  mExpenses.forEach(e=>{
     if(!e.date) return;
     const d=new Date(e.date);
     if(d.getMonth()===curM&&d.getFullYear()===curY){
@@ -3945,8 +3974,15 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
     .map(([cat,budget])=>({cat,budget,actual:curMonthExp[cat]||0,pct:budget>0?Math.min((curMonthExp[cat]||0)/budget*100,150):null}))
     .sort((a,b)=>(b.pct||0)-(a.pct||0));
 
+  // Budget overspend reminders
+  if(notifCfg.budgetOverspend!==false){
+    budgetRows.filter(r=>r.budget>0&&r.actual>r.budget).forEach(r=>{
+      reminders.push({type:"budget",icon:"⚠",color:"#f97316",msg:`${r.cat} over budget — spent ${fmtS(r.actual)} of ${fmtS(r.budget)}`,tab:"expenses"});
+    });
+  }
+
   // ── Tax estimates (India) ──────────────────────────────────────────────
-  const salarySources = data.income.filter(i=>i.source==="Salary");
+  const salarySources = mIncome.filter(i=>i.source==="Salary");
   const grossSalary   = salarySources.reduce((s,i)=>{
     const f=i.frequency||"Monthly"; return s+(f==="Monthly"?i.amount*12:f==="Annual"?i.amount:i.amount);
   },0);
@@ -3954,13 +3990,13 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
   const hraReceived   = salarySources.reduce((s,i)=>s+(parseFloat(i.hra)||0)*12,0);
   const pfContrib     = salarySources.reduce((s,i)=>s+(parseFloat(i.pf)||0)*12,0);
   const annualBonus   = salarySources.reduce((s,i)=>s+(parseFloat(i.bonus)||0),0);
-  const rentalInc     = data.income.filter(i=>i.source==="Rental").reduce((s,i)=>s+(i.amount||0)*12,0);
-  const capGainsAssets= data.assets.filter(a=>a.invested>0&&a.value>a.invested);
+  const rentalInc     = mIncome.filter(i=>i.source==="Rental").reduce((s,i)=>s+(i.amount||0)*12,0);
+  const capGainsAssets= mAssets.filter(a=>a.invested>0&&a.value>a.invested);
   const estLTCG       = capGainsAssets.reduce((s,a)=>s+Math.max(0,a.value-a.invested),0);
   // 80C: PF + ELSS + PPF
   const pfDeduct = pfContrib;
-  const elssInvested = data.assets.filter(a=>a.category==="Mutual Funds"&&/elss|tax sav/i.test(a.name||"")).reduce((s,a)=>s+(a.invested||0),0);
-  const ppf = data.assets.filter(a=>a.category==="EPF/PPF"&&/ppf/i.test(a.name||"")).reduce((s,a)=>s+(a.value||0)*0.10,0);
+  const elssInvested = mAssets.filter(a=>a.category==="Mutual Funds"&&/elss|tax sav/i.test(a.name||"")).reduce((s,a)=>s+(a.invested||0),0);
+  const ppf = mAssets.filter(a=>a.category==="EPF/PPF"&&/ppf/i.test(a.name||"")).reduce((s,a)=>s+(a.value||0)*0.10,0);
   const sec80C = Math.min(pfDeduct+elssInvested+ppf, 150000);
   const stdDeduct = grossSalary>0 ? 50000 : 0;
   const taxableIncome = Math.max(0, grossSalary+rentalInc+annualBonus - stdDeduct - sec80C);
@@ -4001,9 +4037,9 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
           <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
             <span style={{fontSize:10,color:"#444",fontWeight:700,letterSpacing:1}}>VIEW:</span>
             {[{id:"all",name:"Consolidated",color:"#60a5fa"},...family].map(m=>{
-              const mAssets   = m.id==="all"?data.assets  :data.assets.filter(a=>(a.memberId||"self")===m.id);
-              const mLiab     = m.id==="all"?data.liabilities:data.liabilities.filter(l=>(l.memberId||"self")===m.id);
-              const mNW       = mAssets.reduce((s,a)=>s+(a.value||0),0) - mLiab.reduce((s,l)=>s+(l.value||0),0);
+              const pillAssets = m.id==="all"?data.assets  :data.assets.filter(a=>(a.memberId||"self")===m.id);
+              const pillLiab   = m.id==="all"?data.liabilities:data.liabilities.filter(l=>(l.memberId||"self")===m.id);
+              const pillNW     = pillAssets.reduce((s,a)=>s+(a.value||0),0) - pillLiab.reduce((s,l)=>s+(l.value||0),0);
               return(
                 <button key={m.id} onClick={()=>setActiveMember(m.id)}
                   style={{padding:"6px 14px",borderRadius:20,border:`1px solid ${activeMember===m.id?m.color:"#2a2a3a"}`,
@@ -4011,7 +4047,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
                     color:activeMember===m.id?m.color:"#666",cursor:"pointer",fontSize:12,
                     fontWeight:activeMember===m.id?700:400,fontFamily:"inherit",transition:"all .15s"}}>
                   {m.name}
-                  {m.id!=="all"&&<span style={{fontSize:10,marginLeft:6,opacity:.7}}>{fmtS(mNW)}</span>}
+                  {m.id!=="all"&&<span style={{fontSize:10,marginLeft:6,opacity:.7}}>{fmtS(pillNW)}</span>}
                 </button>
               );
             })}
@@ -4019,11 +4055,11 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
           {/* Member net worth cards */}
           <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(family.length,4)},1fr)`,gap:10}}>
             {family.map(m=>{
-              const mAssets = data.assets.filter(a=>(a.memberId||"self")===m.id);
-              const mLiab   = data.liabilities.filter(l=>(l.memberId||"self")===m.id);
-              const mNW     = mAssets.reduce((s,a)=>s+(a.value||0),0) - mLiab.reduce((s,l)=>s+(l.value||0),0);
-              const mInc    = data.income.filter(i=>(i.memberId||"self")===m.id).reduce((s,i)=>s+(i.amount||0),0);
-              const isActive= activeMember===m.id;
+              const cardAssets = data.assets.filter(a=>(a.memberId||"self")===m.id);
+              const cardLiab   = data.liabilities.filter(l=>(l.memberId||"self")===m.id);
+              const cardNW     = cardAssets.reduce((s,a)=>s+(a.value||0),0) - cardLiab.reduce((s,l)=>s+(l.value||0),0);
+              const cardInc    = data.income.filter(i=>(i.memberId||"self")===m.id).reduce((s,i)=>s+(i.amount||0),0);
+              const isActive   = activeMember===m.id;
               return(
                 <div key={m.id} onClick={()=>setActiveMember(isActive?"all":m.id)}
                   style={{background:"#0c0c1c",border:`2px solid ${isActive?m.color:m.color+"33"}`,
@@ -4038,10 +4074,10 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
                       <div style={{fontSize:10,color:"#444"}}>{m.relation}</div>
                     </div>
                   </div>
-                  <div style={{fontSize:16,fontWeight:800,color:mNW>=0?"#4ade80":"#f87171",fontFamily:"'DM Mono',monospace",marginBottom:4}}>{fmtS(mNW)}</div>
+                  <div style={{fontSize:16,fontWeight:800,color:cardNW>=0?"#4ade80":"#f87171",fontFamily:"'DM Mono',monospace",marginBottom:4}}>{fmtS(cardNW)}</div>
                   <div style={{display:"flex",gap:8,fontSize:10,color:"#555"}}>
-                    <span>{mAssets.length} assets</span>
-                    {mInc>0&&<span>· {fmtS(mInc)}/mo</span>}
+                    <span>{cardAssets.length} assets</span>
+                    {cardInc>0&&<span>· {fmtS(cardInc)}/mo</span>}
                   </div>
                 </div>
               );
@@ -4058,7 +4094,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
             : "Net Worth" + (family.length>1?" · Consolidated":"")}
         </div>
         <div style={{fontSize:36,fontWeight:700,letterSpacing:-1}} className="networth-glow">
-          {fmtS(netWorth)} <span style={{fontSize:13,color:"#4ade80",fontWeight:600,background:"#052e16",padding:"3px 8px",borderRadius:6}}>Net Worth</span>
+          {fmtS(useNetWorth)} <span style={{fontSize:13,color:"#4ade80",fontWeight:600,background:"#052e16",padding:"3px 8px",borderRadius:6}}>Net Worth</span>
         </div>
         <div style={{color:"#555",fontSize:12,marginTop:4}}>{new Date().toLocaleDateString("en-IN",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
       </div>
@@ -4066,10 +4102,10 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
       {/* 4 KPI cards */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}} className="grid-4-mobile">
         {[
-          {label:"Total Assets",     value:fmtS(totalAssets),   color:"#4ade80", icon:"↑", sub:`${data.assets.length} items`,       tab:"assets"},
-          {label:"Total Liabilities",value:fmtS(totalLiab),     color:"#f87171", icon:"↓", sub:`Debt ratio ${debtRatio}%`,           tab:"liabilities"},
-          {label:"Total Income",     value:fmtS(totalIncome),   color:"#60a5fa", icon:"₹", sub:`${data.income.length} sources`,      tab:"income"},
-          {label:"Total Expenses",   value:fmtS(totalExpenses), color:"#fbbf24", icon:"◎", sub:`Savings ${savingsRate}%`,            tab:"expenses"},
+          {label:"Total Assets",     value:fmtS(useTotalAssets),   color:"#4ade80", icon:"↑", sub:`${data.assets.length} items`,       tab:"assets"},
+          {label:"Total Liabilities",value:fmtS(useTotalLiab),     color:"#f87171", icon:"↓", sub:`Debt ratio ${debtRatio}%`,           tab:"liabilities"},
+          {label:"Total Income",     value:fmtS(useTotalIncome),   color:"#60a5fa", icon:"₹", sub:`${data.income.length} sources`,      tab:"income"},
+          {label:"Total Expenses",   value:fmtS(useTotalExpenses), color:"#fbbf24", icon:"◎", sub:`Savings ${savingsRate}%`,            tab:"expenses"},
         ].map(s=>(
           <div key={s.label} className="stat-card" style={{cursor:"pointer",transition:"border-color .15s,transform .15s"}}
             onClick={()=>setTab(s.tab)}
@@ -4202,7 +4238,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
               <div className="section-title">Cash Flow</div>
               <div style={{fontSize:11,color:"#60a5fa55"}}>→</div>
             </div>
-            <div style={{fontSize:26,fontWeight:700,color:cashflow>=0?"#4ade80":"#f87171"}}>{cashflow>=0?"+":""}{fmtS(cashflow)}</div>
+            <div style={{fontSize:26,fontWeight:700,color:cashflow>=0?"#4ade80":"#f87171"}}>{cashflow>=0?"+":""}{fmtS(useCashflow)}</div>
             <div style={{marginTop:10,display:"flex",gap:12}}>
               <div style={{flex:1}}><div style={{fontSize:10,color:"#555",marginBottom:3}}>INCOME</div><div style={{fontSize:12,color:"#4ade80",fontWeight:600,wordBreak:"break-all"}}>{fmtS(totalIncome)}</div></div>
               <div style={{flex:1}}><div style={{fontSize:10,color:"#555",marginBottom:3}}>EXPENSES</div><div style={{fontSize:12,color:"#f87171",fontWeight:600,wordBreak:"break-all"}}>{fmtS(totalExpenses)}</div></div>
@@ -4216,7 +4252,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
               <div style={{fontSize:11,color:"#a78bfa55"}}>→</div>
             </div>
             <div style={{fontSize:18,fontWeight:700,color:"#a78bfa",wordBreak:"break-all"}}>{fmtS(totalCover)}</div>
-            <div style={{fontSize:11,color:"#555",marginTop:2}}>{data.insurance.length} policies · {data.insurance.filter(i=>i.status==="Active"||!i.status).length} active</div>
+            <div style={{fontSize:11,color:"#555",marginTop:2}}>{data.insurance.length} policies · {mInsurance.filter(i=>i.status==="Active"||!i.status).length} active</div>
           </div>
         </div>
       </div>
@@ -5685,7 +5721,7 @@ function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember}){
   const [liveData,setLiveData]           = useState({});
   const [refreshingSingle,setRefreshingSingle] = useState(null);
 
-  const total     = data.assets.reduce((s,a)=>s+a.value,0);
+  const total     = data.assets.reduce((s,a)=>s+(a.value||0),0);
   const liveTotal = data.assets.reduce((s,a)=>{
     const q=liveData[a.id]; if(!q) return s+a.value;
     if(a.category==="Stocks"&&a.qty>0)       return s+q.price*a.qty;
@@ -5695,7 +5731,7 @@ function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember}){
   const hasLive   = Object.keys(liveData).length>0;
   const display   = hasLive?liveTotal:total;
   const visibleAssets = filterItems(data.assets);
-  const catTotal  = cat => visibleAssets.filter(a=>a.category===cat).reduce((s,a)=>s+a.value,0);
+  const catTotal  = cat => visibleAssets.filter(a=>a.category===cat).reduce((s,a)=>s+(a.value||0),0);
 
   const addAsset  = asset => { const mid=activeMember==="all"?"self":activeMember; setData(d=>({...d,assets:[...d.assets,{id:Date.now()+Math.random(),memberId:mid,...asset}]})); setShowForm(false); notify("✓ Asset added"); };
   const delAsset  = id    => { setData(d=>({...d,assets:d.assets.filter(a=>a.id!==id)})); notify("Removed"); };
@@ -5742,7 +5778,7 @@ function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember}){
   const donutSegs = ASSET_TABS.filter(t=>t.cat&&catTotal(t.cat)>0)
     .map(t=>({label:t.label, value:catTotal(t.cat), color:t.color||"#888", icon:t.icon}));
   const activeCats  = ASSET_TABS.filter(t=>t.cat&&catTotal(t.cat)>0).length;
-  const filteredTotal = visibleAssets.reduce((s,a)=>s+a.value,0);
+  const filteredTotal = visibleAssets.reduce((s,a)=>s+(a.value||0),0);
 
   return(
     <div>
@@ -6075,8 +6111,8 @@ function LiabilitiesTab({data,setData,notify,apiKey,activeMember,setActiveMember
   const [reconcileData,setReconcileData] = useState(null);
 
   const visibleLiab = filterItems(data.liabilities);
-  const total    = visibleLiab.reduce((s,l)=>s+l.value,0);
-  const catTotal = cat => visibleLiab.filter(l=>l.category===cat).reduce((s,l)=>s+l.value,0);
+  const total    = visibleLiab.reduce((s,l)=>s+(l.value||0),0);
+  const catTotal = cat => visibleLiab.filter(l=>l.category===cat).reduce((s,l)=>s+(l.value||0),0);
   const add      = item => { const mid=activeMember==="all"?"self":activeMember; setData(d=>({...d,liabilities:[...d.liabilities,{id:Date.now()+Math.random(),memberId:mid,...item}]})); setShowForm(false); notify("✓ Liability added"); };
   const saveEdit = item => { setData(d=>({...d,liabilities:d.liabilities.map(l=>l.id===item.id?item:l)})); setEditItem(null); notify("✓ Updated"); };
   const del      = id   => { setData(d=>({...d,liabilities:d.liabilities.filter(l=>l.id!==id)})); notify("Removed"); };
@@ -6869,12 +6905,13 @@ function IncomeTab({data,setData,notify,setTab,activeMember,setActiveMember}){
         segs={donutSegs} grandTotal={totalAnnual} legendTitle="INCOME BY SOURCE"
         stats={[
           {value:fmtS(taxable), label:"TAXABLE",  color:"#fbbf24", big:true},
-          {value:data.income.length, label:"ENTRIES", color:"#4ade80"},
+          {value:visibleIncome.length, label:"ENTRIES", color:"#4ade80"},
         ]}
       />
 
+      <FamilyMemberBar family={family} active={activeMember} setActive={setActiveMember}/>
       {INC_TABS.filter(t=>t.cat).map(t=>{
-        const items=[...data.income.filter(i=>i.source===t.cat)].sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
+        const items=[...visibleIncome.filter(i=>i.source===t.cat)].sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
         return(
           <CatRow key={t.id} tab={t} items={items} grandTotal={totalAnnual}
             renderItem={item=><IncCard key={item.id} item={item} onEdit={()=>setEditItem(item)} onDelete={()=>del(item.id)}/>}
@@ -7558,7 +7595,7 @@ ${smsText.slice(0,8000)}`;
 
 // ── LEGACY VAULT ──────────────────────────────────────────────────────────────
 function LegacyTab({data,netWorth,totalAssets,totalLiab}){
-  const totalCover=data.insurance.reduce((s,i)=>s+i.cover,0);
+  const totalCover=data.insurance.reduce((s,i)=>s+(i.cover||0),0);
   return (
     <div>
       <div style={{marginBottom:28}}>
