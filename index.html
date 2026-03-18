@@ -7126,10 +7126,80 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
   const [formCat,setFormCat]       = useState(null);
   const [showForm,setShowForm]     = useState(false);
   const [editItem,setEditItem]     = useState(null);
-  const [smsMode,setSmsMode]       = useState(false);
-  const [smsText,setSmsText]       = useState("");
-  const [showBudgets,setShowBudgets] = useState(false);
-  const [budgetDraft,setBudgetDraft] = useState(()=>({...(data.budgets||{})}));
+  const [smsMode,setSmsMode]           = useState(false);
+  const [smsText,setSmsText]           = useState("");
+  const [smsInputMode,setSmsInputMode] = useState("file"); // "file" | "paste"
+  const [smsFileName,setSmsFileName]   = useState("");
+  const [smsFileLoading,setSmsFileLoading] = useState(false);
+  const smsFileRef = useRef();
+  const [smsFromDate,setSmsFromDate]   = useState(()=>{ const d=new Date(); d.setMonth(d.getMonth()-1); return d.toISOString().split("T")[0]; });
+  const [smsToDate,setSmsToDate]       = useState(today);
+  const [smsParsed,setSmsParsed]       = useState(null);
+  const [smsSelected,setSmsSelected]   = useState({});
+  const [smsParsing,setSmsParsing]     = useState(false);
+  const [showBudgets,setShowBudgets]   = useState(false);
+  const [budgetDraft,setBudgetDraft]   = useState(()=>({...(data.budgets||{})}));
+
+  // Parse XML backup (SMS Backup & Restore app format)
+  const parseXMLBackup = (xmlText) => {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlText, "text/xml");
+      const smses = doc.querySelectorAll("sms, mms");
+      const lines = [];
+      smses.forEach(sms => {
+        const body = sms.getAttribute("body") || "";
+        const type = sms.getAttribute("type"); // 1=received, 2=sent
+        // Only process received SMS (type=1) — bank alerts are always received
+        if(type === "1" && body.trim()) lines.push(body.trim());
+      });
+      return lines.join("\n");
+    } catch(e) {
+      return "";
+    }
+  };
+
+  // Parse CSV backup
+  const parseCSVBackup = (csvText) => {
+    const lines = csvText.split("\n").slice(1); // skip header
+    const bodies = [];
+    lines.forEach(line => {
+      // Common CSV columns: date, address, type, body
+      // Try to extract just the body/message column
+      const cols = line.match(/("([^"]*)")|([^,]+)/g) || [];
+      // Find the longest column — that's usually the SMS body
+      const longest = cols.reduce((a,b) => (b.replace(/"/g,"").length > a.length ? b.replace(/"/g,"") : a), "");
+      if(longest.length > 20 && /INR|Rs\.|debited|credited/i.test(longest)) bodies.push(longest);
+    });
+    return bodies.join("\n");
+  };
+
+  const handleSMSFile = (file) => {
+    if(!file) return;
+    setSmsFileLoading(true);
+    setSmsFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target.result;
+      let text = "";
+      if(file.name.endsWith(".xml")) {
+        text = parseXMLBackup(content);
+        if(!text) { notify("Could not parse XML — check it's from SMS Backup & Restore app","error"); setSmsFileLoading(false); return; }
+      } else if(file.name.endsWith(".csv")) {
+        text = parseCSVBackup(content);
+        if(!text) { notify("Could not find bank SMS in CSV file","error"); setSmsFileLoading(false); return; }
+      } else {
+        // Plain text file
+        text = content;
+      }
+      const lineCount = text.split("\n").filter(l=>l.trim()).length;
+      setSmsText(text);
+      notify(`✓ Loaded ${lineCount} messages from ${file.name}`);
+      setSmsFileLoading(false);
+    };
+    reader.onerror = () => { notify("Could not read file","error"); setSmsFileLoading(false); };
+    reader.readAsText(file);
+  };
 
   const visibleExp = filterItems(data.expenses);
   const total    = visibleExp.reduce((s,e)=>s+(e.frequency==="Annual"?e.amount/12:e.frequency==="Quarterly"?e.amount/3:e.amount||0),0);
@@ -7149,21 +7219,101 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
     notify("✓ Budgets saved");
   };
 
-  const parseSMS = () => {
-    const lines=smsText.split('\n').filter(l=>l.trim()); let added=0;
-    lines.forEach(line=>{
-      const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+)/i);
-      const debM=line.match(/debited|spent|paid|purchase/i);
-      if(amtM&&debM){
-        const amount=parseFloat(amtM[1].replace(/,/g,''));
-        const merchant=line.match(/(?:at|to)\s+([A-Z][A-Z\s&.]+?)(?:\s+on|\s+for|\.|\s+Ref|\s+UPI|$)/i);
-        const name=merchant?merchant[1].trim():"Bank Transaction";
-        setData(d=>({...d,expenses:[...d.expenses,{id:Date.now()+Math.random(),category:"Other Expense",name,amount,date:today(),type:"Variable",frequency:"Monthly"}]}));
-        added++;
-      }
+  // ── Smart SMS Parser ───────────────────────────────────────────────────────
+  const MERCHANT_CATS = {
+    zomato:"Dining",swiggy:"Dining",dominos:"Dining",mcdonalds:"Dining",kfc:"Dining",starbucks:"Dining",dunzo:"Dining",
+    bigbasket:"Groceries",dmart:"Groceries",reliance:"Groceries",blinkit:"Groceries",zepto:"Groceries",jiomart:"Groceries",
+    amazon:"Shopping",flipkart:"Shopping",myntra:"Shopping",meesho:"Shopping",ajio:"Shopping",nykaa:"Shopping",
+    uber:"Transport",ola:"Transport",rapido:"Transport",petrol:"Transport",fuel:"Transport",irctc:"Transport",
+    netflix:"Entertainment",hotstar:"Entertainment",spotify:"Entertainment",youtube:"Entertainment",bookmyshow:"Entertainment",
+    hospital:"Medical",pharmacy:"Medical",medplus:"Medical",apollo:"Medical","1mg":"Medical",pharmeasy:"Medical",
+    school:"Education",college:"Education",udemy:"Education",coursera:"Education",byjus:"Education",
+    lic:"Insurance Premium",hdfc_life:"Insurance Premium",
+    emi:"EMI",home_loan:"EMI",car_loan:"EMI",
+    sip:"SIP/Investment",mutual:"SIP/Investment",zerodha:"SIP/Investment",groww:"SIP/Investment",kuvera:"SIP/Investment",
+    electricity:"Utilities",water:"Utilities",gas:"Utilities",broadband:"Utilities",postpaid:"Utilities",jio:"Utilities",airtel:"Utilities",
+  };
+  const guessCategory = name => {
+    const n=(name||"").toLowerCase().replace(/[\s\-_]/g,"");
+    for(const [k,c] of Object.entries(MERCHANT_CATS)) if(n.includes(k)) return c;
+    return "Other Expense";
+  };
+  const parseDate = text => {
+    const months={jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
+    let m;
+    if((m=text.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})/))) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+    if((m=text.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*'?(\d{2,4})/i))) return `${m[3].length===2?"20"+m[3]:m[3]}-${months[m[2].toLowerCase().slice(0,3)]}-${m[1].padStart(2,"0")}`;
+    if((m=text.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/))) return `${m[1]}-${m[2]}-${m[3]}`;
+    if((m=text.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{2})(?!\d)/))) return `20${m[3]}-${m[2]}-${m[1]}`;
+    return today();
+  };
+
+  const parseSMSRegex = (text, fromD, toD) => {
+    const lines=text.split(/\n/).filter(l=>l.trim().length>10);
+    const txns=[];
+    lines.forEach((line,idx)=>{
+      const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/i);
+      if(!amtM) return;
+      const amount=parseFloat(amtM[1].replace(/,/g,""));
+      if(!amount||amount<1) return;
+      const isDebit =/debited|spent|paid|purchase|withdrawn|debit/i.test(line);
+      const isCredit=/credited|received|credit|deposit|refund/i.test(line);
+      if(!isDebit&&!isCredit) return;
+      const txnDate=parseDate(line);
+      if(txnDate<fromD||txnDate>toD) return;
+      const mM=line.match(/(?:at|to|from|by)\s+([A-Za-z][A-Za-z0-9\s&.\-]{1,28}?)(?:\s+on|\s+for|\.|\s*,|\s+Ref|\s+UPI|\s+via|$)/i);
+      const name=mM?mM[1].trim():(isCredit?"Bank Credit":"Bank Txn");
+      txns.push({id:`sms_${idx}_${Date.now()}`,name,amount,date:txnDate,type:isDebit?"expense":"credit",category:isDebit?guessCategory(name):"Other Income",raw:line.slice(0,70)});
     });
-    notify(added>0?`${added} transaction(s) imported`:"No debit transactions detected","info");
-    setSmsMode(false); setSmsText("");
+    return txns;
+  };
+
+  const handleSMSParse = async () => {
+    if(!smsText.trim()){notify("Paste your SMS messages first","error");return;}
+    setSmsParsing(true);
+    let txns=[];
+    if(apiKey){
+      try{
+        const prompt=`Extract ALL bank/payment transactions from these SMS messages. Return ONLY a valid JSON array, no markdown, no explanation.
+Include only transactions between ${smsFromDate} and ${smsToDate}.
+Each item: {"name":"merchant","amount":number,"date":"YYYY-MM-DD","type":"expense|credit","category":"one of [EMI,Groceries,Utilities,Insurance Premium,SIP/Investment,Medical,Dining,Transport,Shopping,Entertainment,Education,Travel,Other Expense] for expense or Other Income for credit","raw":"first 50 chars of SMS"}
+SMS:
+${smsText.slice(0,8000)}`;
+        const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+          headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4000,messages:[{role:"user",content:prompt}]})});
+        const result=await resp.json();
+        const raw=result.content.map(c=>c.text||"").join("");
+        const s=raw.indexOf("["),e=raw.lastIndexOf("]");
+        if(s!==-1){ txns=JSON.parse(raw.slice(s,e+1)).filter(t=>t.amount>0).map((t,i)=>({...t,id:`ai_${i}_${Date.now()}`})); }
+        else throw new Error("No JSON");
+      }catch(err){
+        console.warn("AI SMS fallback to regex:",err.message);
+        txns=parseSMSRegex(smsText,smsFromDate,smsToDate);
+      }
+    } else {
+      txns=parseSMSRegex(smsText,smsFromDate,smsToDate);
+    }
+    if(!txns.length){notify("No transactions found in that date range","info");setSmsParsing(false);return;}
+    setSmsParsed(txns);
+    const sel={};
+    txns.forEach(t=>{ sel[t.id]=t.type==="expense"; });
+    setSmsSelected(sel);
+    setSmsParsing(false);
+  };
+
+  const applySelectedSMS = () => {
+    const chosen=smsParsed.filter(t=>smsSelected[t.id]);
+    const expenses=chosen.filter(t=>t.type==="expense");
+    const credits=chosen.filter(t=>t.type==="credit");
+    const mid=activeMember==="all"?"self":activeMember;
+    setData(d=>({
+      ...d,
+      expenses:[...d.expenses,...expenses.map(t=>({id:Date.now()+Math.random(),name:t.name,amount:t.amount,date:t.date,category:t.category,type:"Variable",frequency:"Monthly",memberId:mid}))],
+      income:[...d.income,...credits.map(t=>({id:Date.now()+Math.random(),name:t.name,amount:t.amount,date:t.date,source:"Other Income",frequency:"Monthly",memberId:mid}))],
+    }));
+    notify(`✓ Added ${expenses.length} expense${expenses.length!==1?"s":""}${credits.length>0?` + ${credits.length} income`:""}`);
+    setSmsParsed(null); setSmsSelected({}); setSmsMode(false); setSmsText("");
   };
 
   const donutSegs = EXP_TABS.filter(t=>t.cat&&catTotal(t.cat)>0)
@@ -7208,13 +7358,179 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
         </div>
       )}
 
-      {smsMode&&(
+      {smsMode&&!smsParsed&&(
         <div className="stat-card" style={{marginBottom:14,background:"#0d0d1a",border:"1px solid #2a2a4a"}}>
-          <div style={{fontSize:14,fontWeight:600,marginBottom:8}}>📱 Paste Bank SMS</div>
-          <textarea className="input" style={{height:80,resize:"vertical"}} value={smsText} onChange={e=>setSmsText(e.target.value)} placeholder="INR 2500 debited from AC XX1234 at ZOMATO on 10-03-2026"/>
-          <div style={{display:"flex",gap:8,marginTop:8}}>
-            <button className="btn btn-primary" onClick={parseSMS}>Import</button>
-            <button className="btn btn-ghost"   onClick={()=>setSmsMode(false)}>Cancel</button>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={{fontSize:14,fontWeight:600}}>📱 Smart SMS Analyser</div>
+            <button onClick={()=>{setSmsMode(false);setSmsText("");setSmsFileName("");}} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:18}}>×</button>
+          </div>
+
+          {/* Input mode tabs */}
+          <div style={{display:"flex",gap:6,marginBottom:14,background:"#070710",borderRadius:10,padding:4}}>
+            {[{id:"file",icon:"📂",label:"Upload Backup File"},
+              {id:"paste",icon:"📋",label:"Paste SMS Text"}].map(m=>(
+              <button key={m.id} onClick={()=>setSmsInputMode(m.id)}
+                style={{flex:1,padding:"8px",borderRadius:8,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,transition:"all .15s",
+                  background:smsInputMode===m.id?"linear-gradient(135deg,#1e1b4b,#2e1065)":"transparent",
+                  color:smsInputMode===m.id?"#a78bfa":"#555"}}>
+                {m.icon} {m.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Date range — shown in both modes */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            <div>
+              <div style={{fontSize:10,color:"#a78bfa",fontWeight:700,letterSpacing:1,marginBottom:5}}>FROM DATE</div>
+              <input className="input" type="date" value={smsFromDate} onChange={e=>setSmsFromDate(e.target.value)}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:"#a78bfa",fontWeight:700,letterSpacing:1,marginBottom:5}}>TO DATE</div>
+              <input className="input" type="date" value={smsToDate} onChange={e=>setSmsToDate(e.target.value)}/>
+            </div>
+          </div>
+
+          {/* FILE UPLOAD MODE */}
+          {smsInputMode==="file"&&(
+            <>
+              {/* App recommendations */}
+              <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"12px 14px",marginBottom:12,fontSize:11,color:"#666",lineHeight:2}}>
+                <div style={{color:"#a78bfa",fontWeight:700,marginBottom:6}}>📲 Recommended free backup apps:</div>
+                <div>
+                  <span style={{color:"#4ade80",fontWeight:700}}>Android → SMS Backup & Restore</span>
+                  <span style={{color:"#555"}}> (Play Store, free)</span>
+                </div>
+                <div style={{color:"#888",marginLeft:0,fontSize:10,marginBottom:6}}>Open app → Back Up Now → saves .xml file → transfer to PC → upload here</div>
+                <div>
+                  <span style={{color:"#60a5fa",fontWeight:700}}>iPhone → iMazing / SMS Export</span>
+                  <span style={{color:"#555"}}> (exports CSV)</span>
+                </div>
+                <div style={{color:"#888",fontSize:10,marginBottom:6}}>Connect iPhone to PC → iMazing → Messages → Export as CSV → upload here</div>
+                <div style={{color:"#333",fontSize:10,borderTop:"1px solid #111",paddingTop:6}}>
+                  Supported formats: <span style={{color:"#aaa"}}>.xml</span> (SMS Backup & Restore), <span style={{color:"#aaa"}}>.csv</span> (iMazing / any export), <span style={{color:"#aaa"}}>.txt</span> (plain text)
+                </div>
+              </div>
+
+              {/* Drop zone */}
+              <input ref={smsFileRef} type="file" accept=".xml,.csv,.txt" style={{display:"none"}}
+                onChange={e=>handleSMSFile(e.target.files[0])}/>
+              <div onClick={()=>smsFileRef.current.click()}
+                onDragOver={e=>e.preventDefault()}
+                onDrop={e=>{e.preventDefault();handleSMSFile(e.dataTransfer.files[0]);}}
+                style={{border:"2px dashed #2a2a4a",borderRadius:12,padding:"28px",textAlign:"center",cursor:"pointer",
+                  background:"#070710",transition:"border-color .15s",marginBottom:10}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor="#7c3aed"}
+                onMouseLeave={e=>e.currentTarget.style.borderColor="#2a2a4a"}>
+                {smsFileLoading
+                  ? <div style={{color:"#a78bfa",fontSize:13}}>⟳ Loading file…</div>
+                  : smsFileName
+                    ? <div>
+                        <div style={{fontSize:20,marginBottom:6}}>✅</div>
+                        <div style={{fontSize:13,color:"#4ade80",fontWeight:600}}>{smsFileName}</div>
+                        <div style={{fontSize:11,color:"#555",marginTop:4}}>{smsText.split("\n").filter(l=>l.trim()).length} messages loaded · click to change file</div>
+                      </div>
+                    : <div>
+                        <div style={{fontSize:28,marginBottom:8}}>📂</div>
+                        <div style={{fontSize:13,color:"#aaa",fontWeight:600}}>Drop your SMS backup file here</div>
+                        <div style={{fontSize:11,color:"#555",marginTop:4}}>or click to browse · .xml · .csv · .txt</div>
+                      </div>
+                }
+              </div>
+            </>
+          )}
+
+          {/* PASTE MODE */}
+          {smsInputMode==="paste"&&(
+            <>
+              <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px",marginBottom:10,fontSize:11,color:"#666",lineHeight:1.8}}>
+                <div style={{color:"#a78bfa",fontWeight:700,marginBottom:4}}>How to copy SMS manually:</div>
+                <div>📱 <span style={{color:"#aaa"}}>iPhone:</span> Messages → search "debited" or "INR" → copy bank SMS → paste below</div>
+                <div>📱 <span style={{color:"#aaa"}}>Android:</span> Messages → search "debited" → long press → Select All → Copy → paste below</div>
+              </div>
+              <textarea className="input" style={{height:130,resize:"vertical",fontSize:12,lineHeight:1.6}}
+                value={smsText} onChange={e=>setSmsText(e.target.value)}
+                placeholder={`INR 2500 debited from AC XX1234 at ZOMATO on 15-03-2026\nINR 1200 debited from AC XX1234 to SWIGGY on 16-03-2026\nINR 50000 credited to AC XX1234 from SALARY on 01-03-2026`}/>
+            </>
+          )}
+
+          <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
+            <button className="btn btn-primary" onClick={handleSMSParse}
+              disabled={smsParsing||(!smsText.trim())}
+              style={{flex:1}}>
+              {smsParsing
+                ? <><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>⟳</span> Analysing…</>
+                : apiKey ? "🤖 Analyse with AI" : "🔍 Analyse"}
+            </button>
+            {!apiKey&&<div style={{fontSize:10,color:"#555",maxWidth:120}}>Add API key in Profile for smarter detection</div>}
+          </div>
+          {smsText.trim()&&<div style={{fontSize:10,color:"#333",marginTop:6,textAlign:"center"}}>{smsText.split("\n").filter(l=>l.trim()).length} lines loaded · {smsFromDate} → {smsToDate}</div>}
+        </div>
+      )}
+
+      {/* Confirmation screen */}
+      {smsMode&&smsParsed&&(
+        <div className="stat-card" style={{marginBottom:14,background:"#0d0d1a",border:"1px solid #2a2a4a"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+            <div style={{fontSize:14,fontWeight:600}}>✓ Review Transactions</div>
+            <button onClick={()=>{setSmsParsed(null);setSmsSelected({});}} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:12}}>← Back</button>
+          </div>
+          <div style={{fontSize:12,color:"#555",marginBottom:12}}>
+            Found <span style={{color:"#a78bfa",fontWeight:700}}>{smsParsed.length}</span> transactions from {smsFromDate} to {smsToDate}.
+            Tick/untick each one before adding.
+          </div>
+
+          {/* Select all / deselect all */}
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            <button className="btn btn-ghost" style={{fontSize:11}} onClick={()=>{const s={};smsParsed.forEach(t=>s[t.id]=true);setSmsSelected(s);}}>Select All</button>
+            <button className="btn btn-ghost" style={{fontSize:11}} onClick={()=>setSmsSelected({})}>Deselect All</button>
+            <button className="btn btn-ghost" style={{fontSize:11}} onClick={()=>{const s={};smsParsed.filter(t=>t.type==="expense").forEach(t=>s[t.id]=true);setSmsSelected(s);}}>Expenses Only</button>
+            <div style={{marginLeft:"auto",fontSize:12,color:"#a78bfa",fontWeight:700,alignSelf:"center"}}>
+              {Object.values(smsSelected).filter(Boolean).length} selected
+            </div>
+          </div>
+
+          {/* Transaction list */}
+          <div style={{maxHeight:360,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
+            {smsParsed.map(t=>{
+              const isSel=!!smsSelected[t.id];
+              const isExp=t.type==="expense";
+              return(
+                <div key={t.id} onClick={()=>setSmsSelected(s=>({...s,[t.id]:!s[t.id]}))}
+                  style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",borderRadius:10,cursor:"pointer",
+                    background:isSel?"#1a1a2e":"#070710",border:`1px solid ${isSel?(isExp?"#7c3aed":"#16a34a"):"#111"}`,transition:"all .1s"}}>
+                  <input type="checkbox" checked={isSel} onChange={()=>{}} onClick={e=>e.stopPropagation()} style={{width:15,height:15,flexShrink:0,cursor:"pointer"}}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#e8e8f0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</div>
+                    <div style={{display:"flex",gap:8,marginTop:2,flexWrap:"wrap"}}>
+                      <span style={{fontSize:10,padding:"1px 6px",borderRadius:6,background:isExp?"#2d0a0a":"#052e16",color:isExp?"#f87171":"#4ade80",fontWeight:700}}>
+                        {isExp?"Expense":"Income"}
+                      </span>
+                      <span style={{fontSize:10,color:"#555"}}>{t.category}</span>
+                      <span style={{fontSize:10,color:"#444"}}>{t.date}</span>
+                    </div>
+                    {t.raw&&<div style={{fontSize:10,color:"#333",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.raw}</div>}
+                  </div>
+                  {/* Editable category */}
+                  <select value={t.category} onClick={e=>e.stopPropagation()}
+                    onChange={e=>{ const c=e.target.value; setSmsParsed(p=>p.map(x=>x.id===t.id?{...x,category:c}:x)); }}
+                    style={{fontSize:10,padding:"3px 6px",background:"#111",border:"1px solid #2a2a3a",borderRadius:6,color:"#888",fontFamily:"inherit",maxWidth:130}}>
+                    {EXP_TABS.filter(et=>et.cat).map(et=><option key={et.cat} value={et.cat}>{et.cat}</option>)}
+                    <option value="Other Income">Other Income</option>
+                  </select>
+                  <div style={{fontSize:13,fontWeight:700,color:isExp?"#f87171":"#4ade80",fontFamily:"'DM Mono',monospace",flexShrink:0,minWidth:70,textAlign:"right"}}>
+                    {isExp?"-":"+"}₹{t.amount.toLocaleString("en-IN")}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button className="btn btn-primary" style={{flex:1}} onClick={applySelectedSMS}
+              disabled={!Object.values(smsSelected).some(Boolean)}>
+              ✓ Add {Object.values(smsSelected).filter(Boolean).length} Selected Transactions
+            </button>
+            <button className="btn btn-ghost" onClick={()=>{setSmsParsed(null);setSmsSelected({});setSmsMode(false);setSmsText("");}}>Cancel</button>
           </div>
         </div>
       )}
