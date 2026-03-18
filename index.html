@@ -8213,11 +8213,11 @@ function ReorganiseTab({data, setData, notify}){
 
   // Reset selection when segment or filter changes
   const resetSel = () => setSelected({});
-  const toggleItem = id => setSelected(s=>({...s,[id]:!s[id]}));
+  const toggleItem = id => setSelected(s=>({...s,[String(id)]:!s[String(id)]}));
   const toggleAll  = () => {
-    const allSel = filteredItems.every(i=>selected[i.id]);
+    const allSel = filteredItems.every(i=>selected[String(i.id)]);
     const next={};
-    if(!allSel) filteredItems.forEach(i=>next[i.id]=true);
+    if(!allSel) filteredItems.forEach(i=>{ next[String(i.id)]=true; });
     setSelected(next);
   };
   const selectedIds = Object.entries(selected).filter(([,v])=>v).map(([k])=>k);
@@ -8228,10 +8228,10 @@ function ReorganiseTab({data, setData, notify}){
     if(!targetMember){notify("Choose a target member","error");return;}
     if(!selCount){notify("Select at least one item","error");return;}
     setApplying(true);
-    const idSet = new Set(selectedIds);
+    const idSet = new Set(selectedIds.map(String));
     setData(d=>{
       const newItems = (seg.getItems(d)||[]).map(item=>
-        idSet.has(item.id) ? {...item,memberId:targetMember} : item
+        idSet.has(String(item.id)) ? {...item,memberId:targetMember} : item
       );
       return {...d,[seg.key]:newItems};
     });
@@ -8246,10 +8246,10 @@ function ReorganiseTab({data, setData, notify}){
     if(!targetCat){notify("Choose a target category","error");return;}
     if(!selCount){notify("Select at least one item","error");return;}
     setApplying(true);
-    const idSet = new Set(selectedIds);
+    const idSet = new Set(selectedIds.map(String));
     setData(d=>{
       const newItems = (seg.getItems(d)||[]).map(item=>
-        idSet.has(item.id) ? seg.setCat(item,targetCat) : item
+        idSet.has(String(item.id)) ? seg.setCat(item,targetCat) : item
       );
       return {...d,[seg.key]:newItems};
     });
@@ -8370,7 +8370,7 @@ function ReorganiseTab({data, setData, notify}){
               </div>
             )}
             {filteredItems.map(item=>{
-              const isSel = !!selected[item.id];
+              const isSel = !!selected[String(item.id)];
               const memberColor = getMemberColor(item.memberId||"self");
               const memberName  = getMemberName(item.memberId||"self");
               const catName     = seg.getCat(item)||"—";
