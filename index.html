@@ -212,8 +212,22 @@ select.input option { background: #111118; }
   .nav-shell, .sidebar-nav { display: none !important; }
   #print-root { display: block !important; }
 }
-@media screen {
-  .print-only { display: none !important; }
+@media screen and (max-width: 768px) {
+  .nav-shell { flex-direction: column !important; }
+  .sidebar-mobile-hidden { display: none !important; }
+  .main-content-mobile { padding: 16px !important; }
+  .grid-4-mobile { grid-template-columns: 1fr 1fr !important; }
+  .grid-2-mobile { grid-template-columns: 1fr !important; }
+  .hide-mobile { display: none !important; }
+  .modal { width: 96vw !important; max-height: 92vh !important; }
+  .modal-edit { width: 98vw !important; }
+  .rpt-layout { flex-direction: column !important; }
+  .rpt-sidebar { width: 100% !important; position: relative !important; display: flex !important; flex-wrap: wrap !important; gap: 6px !important; }
+  .pin-key { width: 64px !important; height: 64px !important; font-size: 20px !important; }
+}
+@media screen and (max-width: 480px) {
+  .grid-4-mobile { grid-template-columns: 1fr !important; }
+  .kpi-value { font-size: 15px !important; }
 }
 </style>
 </head>
@@ -394,6 +408,14 @@ const DEFAULT_DATA = {
   family:[
     {id:"self",name:"Me",relation:"Self",color:"#a78bfa",dob:"",pan:"",email:"",phone:""}
   ],
+  notifications:{
+    insuranceRenewal:  true,
+    emiDue:            true,
+    fdMaturity:        true,
+    budgetOverspend:   true,
+    renewalDays:       30,
+    emiDueDays:        5,
+  },
 };
 
 const NAV_ITEMS = [
@@ -1111,16 +1133,16 @@ function App(){
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#0a0a0f",minHeight:"100vh",color:"#e8e8f0",display:"flex"}}>
-      {/* Sidebar */}
-      <div style={{width:sidebar?224:60,background:"#08080f",borderRight:"1px solid #151520",padding:"20px 12px",display:"flex",flexDirection:"column",transition:"width 0.2s",flexShrink:0,height:"100vh",position:"sticky",top:0,overflow:"hidden"}} className="no-print">
+      {/* Sidebar — hidden on mobile, shown on desktop */}
+      <div style={{width:sidebar?224:60,background:"#08080f",borderRight:"1px solid #151520",padding:"20px 12px",display:"flex",flexDirection:"column",transition:"width 0.2s",flexShrink:0,height:"100vh",position:"sticky",top:0,overflow:"hidden"}}
+        className={`no-print${window.innerWidth<=768?" sidebar-mobile-hidden":""}`}>
         {/* Logo + user */}
         <div style={{marginBottom:24}}>
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px"}}>
             <div style={{width:32,height:32,borderRadius:10,background:"linear-gradient(135deg,#7c3aed,#3b82f6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>⚡</div>
             {sidebar&&<span style={{fontWeight:700,fontSize:15,letterSpacing:-0.3,whiteSpace:"nowrap"}}>WealthVault</span>}
-            {sidebar&&<span style={{fontSize:9,color:"#252535",marginLeft:"auto",fontFamily:"'DM Mono',monospace"}}>v3</span>}
+            {sidebar&&<span style={{fontSize:9,color:"#252535",marginLeft:"auto",fontFamily:"'DM Mono',monospace"}}>v4</span>}
           </div>
-          {/* Firebase user pill */}
           {FB.enabled && authUser && sidebar&&(
             <div style={{margin:"8px 4px 0",background:"#0c0c1c",border:"1px solid #1a1a2a",borderRadius:8,padding:"6px 10px",display:"flex",alignItems:"center",gap:7}}>
               <div style={{width:22,height:22,borderRadius:"50%",background:"linear-gradient(135deg,#7c3aed,#3b82f6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>
@@ -1166,7 +1188,7 @@ function App(){
       </div>
 
       {/* Main content */}
-      <div style={{flex:1,overflowY:"auto",padding:"28px 32px",maxHeight:"100vh"}}>
+      <div style={{flex:1,overflowY:"auto",padding:"20px 20px 80px",maxHeight:"100vh"}} className="main-content-mobile">
         {notif&&(
           <div style={{position:"fixed",top:20,right:20,zIndex:300,background:notif.type==="success"?"#052e16":notif.type==="info"?"#0a1628":"#2d0a0a",border:`1px solid ${notif.type==="success"?"#16a34a":notif.type==="info"?"#3b82f6":"#ef4444"}`,color:notif.type==="success"?"#4ade80":notif.type==="info"?"#60a5fa":"#f87171",padding:"12px 20px",borderRadius:10,fontSize:13,fontWeight:500,maxWidth:340,zIndex:999}}>
             {notif.type==="success"?"✓":notif.type==="info"?"ℹ":"✗"} {notif.msg}
@@ -1199,6 +1221,33 @@ function App(){
           onSwitchAccount={()=>{if(FB.enabled){FB.auth.signOut().then(()=>setAuthUser(null));} else{setOfflineMode(false);localStorage.removeItem("wv_offlineMode");}}}
         />}
       </div>
+
+      {/* ── Mobile bottom navigation bar ── */}
+      <div className="no-print" style={{display:"none",position:"fixed",bottom:0,left:0,right:0,background:"#08080f",borderTop:"1px solid #151520",zIndex:100,padding:"6px 0 2px"}} id="mobile-nav">
+        {[
+          {id:"dashboard",icon:"⊞",label:"Home"},
+          {id:"assets",   icon:"↑", label:"Assets"},
+          {id:"expenses", icon:"◎", label:"Spend"},
+          {id:"reports",  icon:"📊",label:"Reports"},
+          {id:"profile",  icon:"◉", label:"Profile"},
+        ].map(item=>(
+          <div key={item.id} onClick={()=>setTab(item.id)}
+            style={{flex:1,display:"inline-flex",flexDirection:"column",alignItems:"center",gap:3,padding:"6px 0",cursor:"pointer",
+              color:tab===item.id?"#a78bfa":"#555",transition:"color .15s",width:"20%"}}>
+            <span style={{fontSize:18}}>{item.icon}</span>
+            <span style={{fontSize:9,fontWeight:tab===item.id?700:400}}>{item.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Inject mobile nav visibility via script */}
+      <style>{`
+        @media (max-width: 768px) {
+          #mobile-nav { display: flex !important; }
+          .sidebar-mobile-hidden { display: none !important; }
+          .main-content-mobile { padding: 16px 14px 80px !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -3868,26 +3917,24 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
   const savingsRate=totalIncome>0?(((totalIncome-totalExpenses)/totalIncome)*100).toFixed(1):0;
   const debtRatio=totalAssets>0?((totalLiab/totalAssets)*100).toFixed(1):0;
 
-  // ── Reminders ────────────────────────────────────────────────────────────
+  // ── Reminders (respect notification settings) ────────────────────────────
+  const notifCfg = data.notifications||{insuranceRenewal:true,emiDue:true,fdMaturity:true,renewalDays:30,emiDueDays:5};
   const now = new Date();
   const reminders = [];
-  // Insurance renewals
-  data.insurance.forEach(p=>{
+  if(notifCfg.insuranceRenewal!==false) data.insurance.forEach(p=>{
     if(!p.maturity) return;
     const days=Math.ceil((new Date(p.maturity)-now)/86400000);
-    if(days>=0&&days<=30) reminders.push({type:"insurance",icon:"🛡",color:"#fbbf24",msg:`${p.name} renews in ${days} day${days!==1?"s":""} (${p.maturity})`,tab:"insurance"});
+    if(days>=0&&days<=(notifCfg.renewalDays||30)) reminders.push({type:"insurance",icon:"🛡",color:"#fbbf24",msg:`${p.name} renews in ${days} day${days!==1?"s":""} (${p.maturity})`,tab:"insurance"});
   });
-  // EMI dues (liabilities with emiDate)
-  data.liabilities.forEach(l=>{
+  if(notifCfg.emiDue!==false) data.liabilities.forEach(l=>{
     if(!l.emiDate||!l.emi) return;
     const dayOfMonth=parseInt(l.emiDate)||1;
     const next=new Date(now.getFullYear(),now.getMonth(),dayOfMonth);
     if(next<now) next.setMonth(next.getMonth()+1);
     const days=Math.ceil((next-now)/86400000);
-    if(days<=5) reminders.push({type:"emi",icon:"🏦",color:"#f87171",msg:`${l.name} EMI ₹${Number(l.emi).toLocaleString("en-IN")} due in ${days} day${days!==1?"s":""}`,tab:"liabilities"});
+    if(days<=(notifCfg.emiDueDays||5)) reminders.push({type:"emi",icon:"🏦",color:"#f87171",msg:`${l.name} EMI ₹${Number(l.emi).toLocaleString("en-IN")} due in ${days} day${days!==1?"s":""}`,tab:"liabilities"});
   });
-  // FD maturity
-  data.assets.filter(a=>a.category==="Fixed Deposits").forEach(a=>{
+  if(notifCfg.fdMaturity!==false) data.assets.filter(a=>a.category==="Fixed Deposits").forEach(a=>{
     if(!a.matDate) return;
     const days=Math.ceil((new Date(a.matDate)-now)/86400000);
     if(days>=0&&days<=30) reminders.push({type:"fd",icon:"📋",color:"#60a5fa",msg:`FD "${a.name}" matures in ${days} day${days!==1?"s":""} (${a.matDate})`,tab:"assets"});
@@ -4028,7 +4075,7 @@ function Dashboard({data,netWorth,totalAssets,totalLiab,totalIncome,totalExpense
       </div>
 
       {/* 4 KPI cards */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}} className="grid-4-mobile">
         {[
           {label:"Total Assets",     value:fmtS(totalAssets),   color:"#4ade80", icon:"↑", sub:`${data.assets.length} items`,       tab:"assets"},
           {label:"Total Liabilities",value:fmtS(totalLiab),     color:"#f87171", icon:"↓", sub:`Debt ratio ${debtRatio}%`,           tab:"liabilities"},
@@ -7507,6 +7554,53 @@ function ChangePinCard({notify}){
   );
 }
 
+// ── NOTIFICATION SETTINGS ─────────────────────────────────────────────────────
+function NotificationSettings({data, setData}){
+  const cfg = data.notifications||{insuranceRenewal:true,emiDue:true,fdMaturity:true,budgetOverspend:true,renewalDays:30,emiDueDays:5};
+  const save = patch => setData(d=>({...d,notifications:{...d.notifications||cfg,...patch}}));
+
+  const Toggle = ({label, desc, field}) => {
+    const on = cfg[field]!==false;
+    return(
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #111"}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#e8e8f0"}}>{label}</div>
+          <div style={{fontSize:11,color:"#555",marginTop:2}}>{desc}</div>
+        </div>
+        <div onClick={()=>save({[field]:!on})}
+          style={{width:44,height:24,borderRadius:12,background:on?"#7c3aed":"#2a2a3a",
+            position:"relative",cursor:"pointer",transition:"background .2s",flexShrink:0}}>
+          <div style={{width:18,height:18,borderRadius:"50%",background:"#fff",
+            position:"absolute",top:3,left:on?23:3,transition:"left .2s"}}/>
+        </div>
+      </div>
+    );
+  };
+
+  return(
+    <div>
+      <Toggle label="Insurance Renewal" desc="Alert when policy renews within the set days" field="insuranceRenewal"/>
+      <Toggle label="EMI Due Date" desc="Alert when EMI is due within the set days" field="emiDue"/>
+      <Toggle label="FD Maturity" desc="Alert when Fixed Deposit matures within 30 days" field="fdMaturity"/>
+      <Toggle label="Budget Overspend" desc="Alert when spending exceeds budget in any category" field="budgetOverspend"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:14}}>
+        <div>
+          <div style={{fontSize:10,color:"#555",fontWeight:700,letterSpacing:1,marginBottom:6}}>INSURANCE ALERT (DAYS)</div>
+          <select className="input" value={cfg.renewalDays||30} onChange={e=>save({renewalDays:parseInt(e.target.value)})}>
+            {[7,14,30,60,90].map(d=><option key={d} value={d}>{d} days before</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:"#555",fontWeight:700,letterSpacing:1,marginBottom:6}}>EMI ALERT (DAYS)</div>
+          <select className="input" value={cfg.emiDueDays||5} onChange={e=>save({emiDueDays:parseInt(e.target.value)})}>
+            {[1,2,3,5,7,10].map(d=><option key={d} value={d}>{d} days before</option>)}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,authUser,fbStatus,onSwitchAccount}){
   const [form,setForm]=useState({...data.profile});
   const [keyInput,setKeyInput]=useState(apiKey);
@@ -7589,6 +7683,10 @@ function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,a
             </div>
           </div>
           <div className="stat-card" style={{marginTop:16}}>
+            <div className="section-title">🔔 Notification Settings</div>
+            <NotificationSettings data={data} setData={setData}/>
+          </div>
+          <div className="stat-card" style={{marginTop:16}}>
             <div className="section-title">Data & Privacy</div>
             <div style={{fontSize:12,color:"#666",lineHeight:1.8}}>
               <div>💾 All data saved in browser (localStorage)</div>
@@ -7639,7 +7737,9 @@ function F({label,type,options,value,onChange,placeholder}){
 const REPORT_TYPES = [
   {id:"networth",    label:"Net Worth Statement",   icon:"⚖️",  desc:"Assets vs liabilities overview"},
   {id:"assets",      label:"Assets Report",          icon:"📈",  desc:"Holdings, cost basis & P&L"},
+  {id:"pnl",         label:"Investment P&L",         icon:"💰",  desc:"Profit/loss on stocks, MF, crypto"},
   {id:"liabilities", label:"Liabilities Report",     icon:"🏦",  desc:"Loans, EMI schedule, outstanding"},
+  {id:"emischedule", label:"EMI Schedule",           icon:"📅",  desc:"All EMIs, due dates, payoff timeline"},
   {id:"income",      label:"Income Report",          icon:"₹",   desc:"All income sources & amounts"},
   {id:"expenses",    label:"Expenses Report",        icon:"💸",  desc:"Spending by category & type"},
   {id:"cashflow",    label:"Cash Flow Summary",      icon:"🔄",  desc:"Income vs expenses, surplus"},
@@ -8830,10 +8930,95 @@ function ReportsTab({data,activeMember,setActiveMember}){
     );
   };
 
+  // ── Investment P&L Report ──────────────────────────────────────────────────
+  const renderPnL = () => {
+    const inv = rdata.assets.filter(a=>["Stocks","Mutual Funds","Crypto"].includes(a.category)&&(a.invested>0||a.buyPrice>0));
+    const totalInvested = inv.reduce((s,a)=>{
+      const cost = a.category==="Mutual Funds" ? (a.invested||0) : (a.qty||0)*(a.buyPrice||0);
+      return s+cost;
+    },0);
+    const totalCurrent = inv.reduce((s,a)=>s+(a.value||0),0);
+    const totalPnl = totalCurrent - totalInvested;
+    const rows = inv.map(a=>{
+      const cost = a.category==="Mutual Funds" ? (a.invested||0) : (a.qty||0)*(a.buyPrice||0);
+      const pnl  = (a.value||0) - cost;
+      const pct  = cost>0 ? (pnl/cost*100).toFixed(1) : 0;
+      return [
+        a.name,
+        a.category,
+        {v:fmtS(cost), color:"#aaa"},
+        {v:fmtS(a.value||0), color:"#4ade80"},
+        {v:(pnl>=0?"+":"")+fmtS(pnl), color:pnl>=0?"#4ade80":"#f87171"},
+        {v:(pnl>=0?"+":"")+pct+"%", color:pnl>=0?"#4ade80":"#f87171"},
+      ];
+    }).sort((a,b)=>(b[4].v>a[4].v?1:-1));
+    return(<div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+        {[
+          {l:"Total Invested",  v:fmtS(totalInvested), c:"#aaa"},
+          {l:"Current Value",   v:fmtS(totalCurrent),  c:"#4ade80"},
+          {l:"Total P&L",       v:(totalPnl>=0?"+":"")+fmtS(totalPnl), c:totalPnl>=0?"#4ade80":"#f87171"},
+        ].map(s=>(
+          <div key={s.l} className="rpt-kpi">
+            <div style={{fontSize:10,color:"#555",marginBottom:4}}>{s.l}</div>
+            <div className="rpt-kpi-val" style={{color:s.c}}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+      <RptTable
+        headers={["Holding","Category","Invested","Current Value","P&L (₹)","P&L (%)"]}
+        rows={rows}
+        totals={["TOTAL","",{v:fmtS(totalInvested),color:"#aaa"},{v:fmtS(totalCurrent),color:"#4ade80"},{v:(totalPnl>=0?"+":"")+fmtS(totalPnl),color:totalPnl>=0?"#4ade80":"#f87171"},""]}
+      />
+    </div>);
+  };
+
+  // ── EMI Schedule Report ────────────────────────────────────────────────────
+  const renderEmiSchedule = () => {
+    const loans = rdata.liabilities.filter(l=>l.emi>0);
+    const totalEmi = loans.reduce((s,l)=>s+(l.emi||0),0);
+    const totalOut = loans.reduce((s,l)=>s+(l.value||0),0);
+    const rows = loans.map(l=>{
+      const daysLeft = l.endDate ? Math.ceil((new Date(l.endDate)-new Date())/86400000) : null;
+      const paidPct  = l.origAmt>0 ? ((l.origAmt-l.value)/l.origAmt*100).toFixed(0) : null;
+      return [
+        l.name,
+        l.lender||"—",
+        {v:fmtS(l.emi)+"/mo", color:"#f87171"},
+        {v:fmtS(l.value), color:"#f87171"},
+        l.intRate>0?{v:l.intRate+"%",color:"#fbbf24"}:"—",
+        l.emiDate||"—",
+        daysLeft!==null ? {v:daysLeft<0?"Overdue":Math.round(daysLeft/30)+"mo left", color:daysLeft<90?"#f87171":"#aaa"} : "—",
+        paidPct!==null ? {v:paidPct+"% paid", color:"#4ade80"} : "—",
+      ];
+    });
+    return(<div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+        {[
+          {l:"Total Monthly EMI",  v:fmtS(totalEmi)+"/mo", c:"#f87171"},
+          {l:"Total Outstanding",  v:fmtS(totalOut),        c:"#f87171"},
+          {l:"Active Loans",       v:loans.length,          c:"#fbbf24"},
+        ].map(s=>(
+          <div key={s.l} className="rpt-kpi">
+            <div style={{fontSize:10,color:"#555",marginBottom:4}}>{s.l}</div>
+            <div className="rpt-kpi-val" style={{color:s.c}}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+      <RptTable
+        headers={["Loan","Lender","EMI","Outstanding","Rate","Due Date","Remaining","Progress"]}
+        rows={rows}
+        totals={["TOTAL","",{v:fmtS(totalEmi)+"/mo",color:"#f87171"},{v:fmtS(totalOut),color:"#f87171"},"","","",""]}
+      />
+    </div>);
+  };
+
   const RENDERERS = {
     networth:    renderNetWorth,
     assets:      renderAssets,
+    pnl:         renderPnL,
     liabilities: renderLiabilities,
+    emischedule: renderEmiSchedule,
     income:      renderIncome,
     expenses:    renderExpenses,
     cashflow:    renderCashFlow,
@@ -8843,9 +9028,9 @@ function ReportsTab({data,activeMember,setActiveMember}){
   };
 
   return(
-    <div style={{display:"flex",gap:20,alignItems:"flex-start"}}>
+    <div style={{display:"flex",gap:20,alignItems:"flex-start"}} className="rpt-layout">
       {/* ── Left sidebar ── */}
-      <div className="no-print" style={{width:200,flexShrink:0,position:"sticky",top:0}}>
+      <div className="no-print rpt-sidebar" style={{width:200,flexShrink:0,position:"sticky",top:0}}>
         {/* Member filter */}
         {family.length>1&&(
           <div style={{marginBottom:16}}>
