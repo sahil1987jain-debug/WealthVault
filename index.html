@@ -9,24 +9,13 @@
 <title>WealthVault — Smart Finance & Legacy App</title>
 <!-- BUILD: 2026-03-18-v4 -->
 <script>
-// ── Force fresh load if GitHub CDN is serving a stale cached version ─────────
-(function(){
-  const BUILD = "2026-03-18-v4";
-  const stored = sessionStorage.getItem("wv_build");
-  if(stored && stored !== BUILD){
-    // New version detected mid-session — reload to get fresh file
-    sessionStorage.setItem("wv_build", BUILD);
-    window.location.reload(true);
-    return;
-  }
-  sessionStorage.setItem("wv_build", BUILD);
-  // If URL has no cache-bust param, add one and redirect (bypasses CDN cache)
-  const url = new URL(window.location.href);
-  if(!url.searchParams.get("v")){
-    url.searchParams.set("v", BUILD);
-    window.location.replace(url.toString());
-  }
-})();
+// ── Kill any old service workers ──────────────────────────────────────────────
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.getRegistrations().then(regs=>{
+    regs.forEach(r=>r.unregister());
+  });
+  if(window.caches) caches.keys().then(keys=>keys.forEach(k=>caches.delete(k)));
+}
 </script>
 <meta name="description" content="Personal finance command centre — assets, liabilities, insurance, income, expenses"/>
 <meta name="theme-color" content="#0a0a0f"/>
