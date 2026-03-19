@@ -10,11 +10,32 @@
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
 <meta http-equiv="X-Frame-Options" content="DENY"/>
 <meta http-equiv="Referrer-Policy" content="no-referrer"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://www.gstatic.com https://accounts.google.com https://apis.google.com; connect-src 'self' https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://mfapi.in https://query1.finance.yahoo.com https://api.coingecko.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' data: blob:;"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://www.gstatic.com https://accounts.google.com https://apis.google.com https://cdn.jsdelivr.net; connect-src 'self' https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://mfapi.in https://query1.finance.yahoo.com https://api.coingecko.com https://api.emailjs.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' data: blob:;"/>
 <title>WealthVault — Smart Finance & Legacy App</title>
 <!-- BUILD: 2026-03-18-v4 -->
 <!-- Google Identity Services for Drive OAuth -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<!-- EmailJS for PIN reset OTP email -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<script>
+  function initEmailJS(){
+    const pk = localStorage.getItem("wv_ejs_pk")||"";
+    if(pk && window.emailjs){ emailjs.init({publicKey: pk}); window._ejsReady=true; }
+  }
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", initEmailJS);
+  else initEmailJS();
+
+  // Helper: wait for emailjs to load (up to 5 seconds)
+  window.waitForEmailJS = () => new Promise((resolve, reject) => {
+    if(window.emailjs){ resolve(window.emailjs); return; }
+    let tries = 0;
+    const check = setInterval(()=>{
+      tries++;
+      if(window.emailjs){ clearInterval(check); resolve(window.emailjs); }
+      else if(tries > 50){ clearInterval(check); reject(new Error("EmailJS failed to load. Check your internet connection and refresh.")); }
+    }, 100);
+  });
+</script>
 <script>
 // ── Kill any old service workers ──────────────────────────────────────────────
 if("serviceWorker" in navigator){
@@ -729,7 +750,7 @@ function loadData(){try{const s=localStorage.getItem(STORAGE_KEY);return s?decod
 const PIN_KEY          = "wv_pin_hash";
 const PIN_ATTEMPTS_KEY = "wv_pin_attempts";
 const PIN_LOCKOUT_KEY  = "wv_pin_lockout";
-const PIN_OTP_KEY      = "wv_pin_otp";       // {code, expiry}
+const PIN_OTP_KEY      = "wv_pin_otp";       // stores OTP hash + expiry
 const MAX_ATTEMPTS     = 5;
 const LOCKOUT_MS       = 5 * 60 * 1000;      // 5 minutes
 const OTP_EXPIRY_MS    = 15 * 60 * 1000;     // 15 minutes
@@ -758,52 +779,87 @@ function PinLock({ onUnlock, onSetPin, mode }) {
   const [countdown, setCountdown] = useState(0);
   const originalPinRef = useRef("");
 
-  // Forgot PIN flow
+  // Forgot PIN flow — sends real OTP via EmailJS
   const [forgotOpen,   setForgotOpen]   = useState(false);
-  const [forgotStep,   setForgotStep]   = useState("send");  // send | showcode | verify | newpin | confirm
-  const [generatedCode,setGeneratedCode]= useState("");
+  const [forgotStep,   setForgotStep]   = useState("send");  // send | sent | verify | newpin | confirm
   const [otpInput,     setOtpInput]     = useState("");
   const [otpError,     setOtpError]     = useState("");
-  const [codeRevealed, setCodeRevealed] = useState(false);
+  const [sending,      setSending]      = useState(false);
   const [newPinF,      setNewPinF]      = useState("");
   const [confPinF,     setConfPinF]     = useState("");
   const newPinFRef = useRef("");
 
-  // Generate a 6-digit OTP, store with expiry, show on screen
-  const sendOtp = () => {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiry = Date.now() + OTP_EXPIRY_MS;
-    localStorage.setItem(PIN_OTP_KEY, JSON.stringify({code, expiry}));
-    setGeneratedCode(code);
-    setCodeRevealed(false);
-    setForgotStep("showcode");
-    setOtpError("");
+  const closeForgot = () => {
+    setForgotOpen(false); setForgotStep("send");
+    setOtpInput(""); setOtpError(""); setSending(false);
+    setNewPinF(""); setConfPinF(""); newPinFRef.current="";
   };
 
-  const verifyOtp = () => {
-    if(!otpInput.trim()){setOtpError("Enter the code from your email");return;}
+  // Send OTP email via EmailJS
+  const sendOtp = async() => {
+    const svcId  = localStorage.getItem("wv_ejs_svc")||"";
+    const tplId  = localStorage.getItem("wv_ejs_tpl")||"";
+    const pk     = localStorage.getItem("wv_ejs_pk")||"";
+    if(!svcId||!tplId||!pk){
+      setOtpError("EmailJS not configured. Go to Profile → PIN Reset Email to set it up.");
+      return;
+    }
+    setSending(true); setOtpError("");
+    try{
+      // Generate 6-digit OTP, store hashed with expiry
+      const code   = String(Math.floor(100000 + Math.random() * 900000));
+      const expiry = Date.now() + OTP_EXPIRY_MS;
+      // Store SHA-256 hash of code (never store plaintext)
+      const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code));
+      const hashHex = Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+      localStorage.setItem(PIN_OTP_KEY, JSON.stringify({hash:hashHex, expiry}));
+
+      // Wait for EmailJS to load (handles slow CDN)
+      let ejs;
+      try{ ejs = await window.waitForEmailJS(); }
+      catch(loadErr){ setOtpError(loadErr.message); setSending(false); return; }
+      ejs.init({publicKey: pk});
+
+      await ejs.send(svcId, tplId, {
+        to_email:    RECOVERY_EMAIL,
+        to_name:     "Sahil",
+        otp_code:    code,
+        app_name:    "WealthVault",
+        expiry_mins: "15",
+      });
+      setForgotStep("sent");
+    }catch(e){
+      setOtpError("Failed to send email: "+(e?.text||e?.message||JSON.stringify(e))+". Check EmailJS settings in Profile.");
+    }
+    setSending(false);
+  };
+
+  const verifyOtp = async() => {
+    if(!otpInput.trim()){ setOtpError("Enter the 6-digit code from your email"); return; }
     try{
       const stored = JSON.parse(localStorage.getItem(PIN_OTP_KEY)||"{}");
-      if(!stored.code){setOtpError("No code found — click Send Code first");return;}
+      if(!stored.hash){ setOtpError("No code found — click Send Code first"); return; }
       if(Date.now() > stored.expiry){
         localStorage.removeItem(PIN_OTP_KEY);
-        setOtpError("Code expired — click Send Code again");
-        setForgotStep("send"); setOtpSent(false); return;
+        setOtpError("Code expired (15 min limit) — click Send Code again");
+        setForgotStep("send"); return;
       }
-      if(otpInput.trim() !== stored.code){setOtpError("Wrong code — check your email");return;}
-      // OTP correct — allow new PIN
+      // Hash the input and compare
+      const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(otpInput.trim()));
+      const hashHex = Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+      if(hashHex !== stored.hash){ setOtpError("Wrong code — check your email and try again"); return; }
       localStorage.removeItem(PIN_OTP_KEY);
       setForgotStep("newpin"); setOtpError(""); setOtpInput("");
-    }catch(e){setOtpError("Error verifying code — try again");}
+    }catch(e){ setOtpError("Error verifying code — try again"); }
   };
 
   const submitNewPinF = () => {
-    if(newPinF.length<4){setOtpError("PIN must be at least 4 digits");return;}
+    if(newPinF.length<4){ setOtpError("PIN must be at least 4 digits"); return; }
     newPinFRef.current = newPinF;
     setForgotStep("confirm"); setNewPinF(""); setOtpError("");
   };
 
-  const submitConfirmF = async () => {
+  const submitConfirmF = async() => {
     if(confPinF !== newPinFRef.current){
       setOtpError("PINs don't match — try again");
       setConfPinF(""); newPinFRef.current=""; setForgotStep("newpin"); return;
@@ -971,89 +1027,62 @@ function PinLock({ onUnlock, onSetPin, mode }) {
       )}
 
       {step === "unlock" && forgotOpen && (
-        <div style={{marginTop:20,width:280,background:"#0e0e18",border:"1px solid #2a2a3a",borderRadius:12,padding:"18px",textAlign:"left"}}>
-          {/* Header */}
+        <div style={{marginTop:20,width:"min(300px,90vw)",background:"#0e0e18",border:"1px solid #2a2a3a",borderRadius:12,padding:"18px",textAlign:"left"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#a78bfa"}}>🔑 Reset PIN via Email</div>
-            <button onClick={()=>{setForgotOpen(false);setForgotStep("send");setGeneratedCode("");setCodeRevealed(false);setOtpInput("");setOtpError("");setNewPinF("");setConfPinF("");}}
-              style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:16}}>×</button>
+            <button onClick={closeForgot} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:16}}>×</button>
           </div>
 
-          {/* Step 1: Generate code */}
+          {/* Step 1: Send OTP */}
           {forgotStep==="send"&&(
             <>
               <div style={{fontSize:12,color:"#888",lineHeight:1.7,marginBottom:14}}>
-                A one-time reset code will be generated and shown on screen. Note it down and enter it to set a new PIN.
+                A 6-digit OTP will be sent to your registered email.
               </div>
-              <div style={{fontSize:11,color:"#444",marginBottom:14,lineHeight:1.6}}>
-                Recovery email on file:<br/>
-                <span style={{color:"#60a5fa",fontWeight:600}}>{RECOVERY_EMAIL}</span>
+              <div style={{background:"#0a0a14",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px",marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:16}}>📧</span>
+                <div>
+                  <div style={{fontSize:10,color:"#555",letterSpacing:1,fontWeight:700}}>RECOVERY EMAIL</div>
+                  <div style={{fontSize:12,color:"#60a5fa",fontWeight:600}}>{RECOVERY_EMAIL}</div>
+                </div>
               </div>
-              <button onClick={sendOtp}
-                style={{width:"100%",padding:"11px",borderRadius:9,background:"linear-gradient(135deg,#7c3aed,#4f46e5)",
-                  border:"none",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
-                Generate Reset Code →
+              {otpError&&<div style={{fontSize:11,color:"#f87171",marginBottom:10,lineHeight:1.5}}>{otpError}</div>}
+              <button onClick={sendOtp} disabled={sending}
+                style={{width:"100%",padding:"11px",borderRadius:9,
+                  background:sending?"#1a1a2e":"linear-gradient(135deg,#7c3aed,#4f46e5)",
+                  border:"none",color:sending?"#555":"#fff",fontWeight:700,fontSize:13,
+                  cursor:sending?"not-allowed":"pointer",fontFamily:"inherit"}}>
+                {sending?"📨 Sending…":"📨 Send OTP to Email →"}
               </button>
-            </>
-          )}
-
-          {/* Step 1b: Show code on screen */}
-          {forgotStep==="showcode"&&(
-            <>
-              <div style={{fontSize:11,color:"#888",marginBottom:12,lineHeight:1.6}}>
-                Your reset code is shown below. Note it down, then click Continue.
-              </div>
-              <div style={{background:"#070710",border:"1px solid #2a2a4a",borderRadius:10,padding:"18px",textAlign:"center",marginBottom:14,position:"relative"}}>
-                {codeRevealed
-                  ? <div style={{fontSize:34,fontWeight:800,letterSpacing:10,color:"#a78bfa",fontFamily:"'DM Mono',monospace"}}>{generatedCode}</div>
-                  : <div style={{fontSize:13,color:"#444",padding:"8px 0",cursor:"pointer"}} onClick={()=>setCodeRevealed(true)}>
-                      <span style={{fontSize:22,display:"block",marginBottom:4}}>👁</span>
-                      Tap to reveal code
-                    </div>
-                }
-                {codeRevealed&&(
-                  <div style={{fontSize:10,color:"#333",marginTop:6}}>Valid for 15 minutes · Note it down</div>
-                )}
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>{setForgotStep("verify");setOtpError("");}} disabled={!codeRevealed}
-                  style={{flex:1,padding:"11px",borderRadius:9,
-                    background:codeRevealed?"linear-gradient(135deg,#7c3aed,#4f46e5)":"#1a1a2e",
-                    border:"none",color:codeRevealed?"#fff":"#444",fontWeight:700,fontSize:13,
-                    cursor:codeRevealed?"pointer":"not-allowed",fontFamily:"inherit"}}>
-                  I've noted it — Continue →
-                </button>
-              </div>
-              <div style={{fontSize:10,color:"#252535",marginTop:8,lineHeight:1.6}}>
-                Reveal the code first, then Continue will unlock.
+              <div style={{fontSize:10,color:"#333",marginTop:10,lineHeight:1.6,textAlign:"center"}}>
+                OTP expires in 15 minutes · Requires EmailJS setup in Profile
               </div>
             </>
           )}
 
-          {/* Step 2: Verify code */}
-          {forgotStep==="verify"&&(
+          {/* Step 2: Enter OTP */}
+          {forgotStep==="sent"&&(
             <>
-              <div style={{fontSize:12,color:"#4ade80",marginBottom:4,fontWeight:600}}>✓ Code generated</div>
-              <div style={{fontSize:11,color:"#888",marginBottom:12,lineHeight:1.6}}>
-                Enter the 6-digit code you just noted down.
+              <div style={{background:"#052e16",border:"1px solid #16a34a",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12,color:"#4ade80",lineHeight:1.6}}>
+                ✓ OTP sent to <strong>{RECOVERY_EMAIL}</strong><br/>
+                <span style={{fontSize:11,color:"#166534"}}>Check inbox + spam folder</span>
               </div>
-              <div style={{fontSize:10,color:"#555",fontWeight:700,letterSpacing:1,marginBottom:6}}>ENTER YOUR CODE</div>
+              <div style={{fontSize:10,color:"#555",fontWeight:700,letterSpacing:1,marginBottom:6}}>ENTER 6-DIGIT OTP</div>
               <input className="input" type="text" inputMode="numeric" maxLength={6}
                 value={otpInput} onChange={e=>setOtpInput(e.target.value.replace(/\D/g,""))}
-                onFocus={e=>{const t=e.target;setTimeout(()=>t.select(),0);}}
-                placeholder="6-digit code"
-                autoFocus
-                style={{fontFamily:"'DM Mono',monospace",letterSpacing:8,fontSize:20,textAlign:"center",marginBottom:8}}/>
+                onKeyDown={e=>e.key==="Enter"&&verifyOtp()}
+                autoFocus placeholder="● ● ● ● ● ●"
+                style={{fontFamily:"'DM Mono',monospace",letterSpacing:10,fontSize:22,textAlign:"center",marginBottom:8}}/>
               {otpError&&<div style={{fontSize:11,color:"#f87171",marginBottom:8}}>{otpError}</div>}
               <button onClick={verifyOtp}
                 style={{width:"100%",padding:"11px",borderRadius:9,background:"linear-gradient(135deg,#7c3aed,#4f46e5)",
                   border:"none",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",marginBottom:8}}>
-                Verify Code →
+                Verify OTP →
               </button>
-              <button onClick={()=>{setForgotStep("showcode");setOtpInput("");setOtpError("");}}
-                style={{width:"100%",padding:"8px",borderRadius:9,background:"transparent",border:"1px solid #2a2a3a",
-                  color:"#555",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>
-                ← Show code again
+              <button onClick={()=>{setForgotStep("send");setOtpInput("");setOtpError("");}}
+                style={{width:"100%",padding:"8px",borderRadius:9,background:"transparent",
+                  border:"1px solid #2a2a3a",color:"#555",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>
+                ← Resend OTP
               </button>
             </>
           )}
@@ -1061,14 +1090,12 @@ function PinLock({ onUnlock, onSetPin, mode }) {
           {/* Step 3: New PIN */}
           {forgotStep==="newpin"&&(
             <>
-              <div style={{fontSize:12,color:"#4ade80",marginBottom:4,fontWeight:600}}>✓ Code verified</div>
+              <div style={{fontSize:12,color:"#4ade80",marginBottom:4,fontWeight:600}}>✓ OTP verified</div>
               <div style={{fontSize:11,color:"#888",marginBottom:12}}>Set your new PIN (4–6 digits)</div>
               <input className="input" type="password" inputMode="numeric" maxLength={6}
                 value={newPinF} onChange={e=>setNewPinF(e.target.value.replace(/\D/g,""))}
-                onFocus={e=>e.target.select()}
-                placeholder="New PIN"
-                autoFocus
-                style={{fontFamily:"'DM Mono',monospace",letterSpacing:6,fontSize:20,textAlign:"center",marginBottom:8}}/>
+                onKeyDown={e=>e.key==="Enter"&&submitNewPinF()} autoFocus placeholder="New PIN"
+                style={{fontFamily:"'DM Mono',monospace",letterSpacing:6,fontSize:22,textAlign:"center",marginBottom:8}}/>
               {otpError&&<div style={{fontSize:11,color:"#f87171",marginBottom:8}}>{otpError}</div>}
               <button onClick={submitNewPinF}
                 style={{width:"100%",padding:"11px",borderRadius:9,background:"linear-gradient(135deg,#7c3aed,#4f46e5)",
@@ -1084,10 +1111,8 @@ function PinLock({ onUnlock, onSetPin, mode }) {
               <div style={{fontSize:11,color:"#888",marginBottom:12}}>Confirm your new PIN</div>
               <input className="input" type="password" inputMode="numeric" maxLength={6}
                 value={confPinF} onChange={e=>setConfPinF(e.target.value.replace(/\D/g,""))}
-                onFocus={e=>e.target.select()}
-                placeholder="Confirm PIN"
-                autoFocus
-                style={{fontFamily:"'DM Mono',monospace",letterSpacing:6,fontSize:20,textAlign:"center",marginBottom:8}}/>
+                onKeyDown={e=>e.key==="Enter"&&submitConfirmF()} autoFocus placeholder="Confirm PIN"
+                style={{fontFamily:"'DM Mono',monospace",letterSpacing:6,fontSize:22,textAlign:"center",marginBottom:8}}/>
               {otpError&&<div style={{fontSize:11,color:"#f87171",marginBottom:8}}>{otpError}</div>}
               <button onClick={submitConfirmF}
                 style={{width:"100%",padding:"11px",borderRadius:9,background:"linear-gradient(135deg,#16a34a,#15803d)",
@@ -1102,24 +1127,6 @@ function PinLock({ onUnlock, onSetPin, mode }) {
       {success && (
         <div style={{position:"fixed",inset:0,background:"rgba(10,10,15,0.95)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99999}}>
           <div style={{fontSize:48,animation:"pinSuccess 0.4s ease"}}>✅</div>
-        </div>
-      )}
-
-      {/* Emergency PIN reset — shown in unlock mode only */}
-      {step==="unlock"&&!forgotOpen&&(
-        <div style={{marginTop:24,textAlign:"center",maxWidth:300,width:"100%"}}>
-          <div style={{fontSize:10,color:"#252535",marginBottom:8}}>Having trouble?</div>
-          <button onClick={()=>{
-            if(window.confirm("This will CLEAR your PIN so you can set a new one.\n\nYour financial data will NOT be deleted.\n\nContinue?")){
-              localStorage.removeItem(PIN_KEY);
-              localStorage.removeItem(PIN_ATTEMPTS_KEY);
-              localStorage.removeItem(PIN_LOCKOUT_KEY);
-              window.location.reload();
-            }
-          }} style={{background:"none",border:"1px solid #2a1a1a",color:"#555",fontSize:11,
-            padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"inherit"}}>
-            Reset PIN (keeps your data)
-          </button>
         </div>
       )}
 
@@ -8853,6 +8860,98 @@ function NotificationSettings({data, setData}){
   );
 }
 
+// ── EMAILJS SETTINGS ─────────────────────────────────────────────────────────
+function EmailJSSettings({notify}){
+  const [svcId,  setSvcId]  = useState(()=>localStorage.getItem("wv_ejs_svc")||"");
+  const [tplId,  setTplId]  = useState(()=>localStorage.getItem("wv_ejs_tpl")||"");
+  const [pk,     setPk]     = useState(()=>localStorage.getItem("wv_ejs_pk")||"");
+  const [testing,setTesting]= useState(false);
+  const [showHow,setShowHow]= useState(false);
+
+  const save = () => {
+    localStorage.setItem("wv_ejs_svc", svcId.trim());
+    localStorage.setItem("wv_ejs_tpl", tplId.trim());
+    localStorage.setItem("wv_ejs_pk",  pk.trim());
+    if(window.emailjs && pk.trim()) emailjs.init({publicKey: pk.trim()});
+    notify("✓ EmailJS settings saved");
+  };
+
+  const testEmail = async() => {
+    if(!svcId||!tplId||!pk){ notify("Fill in all 3 fields first","error"); return; }
+    setTesting(true);
+    try{
+      const ejs = await window.waitForEmailJS();
+      ejs.init({publicKey: pk.trim()});
+      const testCode = String(Math.floor(100000+Math.random()*900000));
+      await ejs.send(svcId.trim(), tplId.trim(), {
+        to_email: "sahil1987jain@gmail.com",
+        to_name: "Sahil",
+        otp_code: testCode,
+        app_name: "WealthVault",
+        expiry_mins: "15",
+      });
+      notify("✓ Test OTP sent to sahil1987jain@gmail.com — check your inbox!");
+    }catch(e){
+      const msg = e?.text||e?.message||JSON.stringify(e)||"Unknown error";
+      notify("Failed: "+msg,"error");
+    }
+    setTesting(false);
+  };
+
+  const allSet = svcId&&tplId&&pk;
+
+  return(
+    <div>
+      <div style={{fontSize:12,color:"#888",marginBottom:12,lineHeight:1.8}}>
+        Powers the <strong style={{color:"#aaa"}}>Forgot PIN</strong> email OTP. Free up to 200 emails/month, no credit card.
+      </div>
+
+      {allSet&&<div style={{background:"#052e16",border:"1px solid #16a34a",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:"#4ade80"}}>✓ EmailJS configured — Forgot PIN OTP is active</div>}
+
+      <div style={{display:"grid",gap:10,marginBottom:12}}>
+        {[
+          {label:"SERVICE ID",    val:svcId,  set:setSvcId,  ph:"service_xxxxxxx"},
+          {label:"TEMPLATE ID",   val:tplId,  set:setTplId,  ph:"template_xxxxxxx"},
+          {label:"PUBLIC KEY",    val:pk,     set:setPk,     ph:"xxxxxxxxxxxxxxxxxxxx"},
+        ].map(f=>(
+          <div key={f.label}>
+            <div style={{fontSize:10,color:"#a78bfa",fontWeight:700,letterSpacing:1,marginBottom:5}}>{f.label}</div>
+            <input className="input" value={f.val} onChange={e=>f.set(e.target.value)} placeholder={f.ph} style={{fontSize:12}}/>
+          </div>
+        ))}
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <button className="btn btn-primary" style={{flex:1,fontSize:12}} onClick={save}>Save</button>
+        {allSet&&<button className="btn btn-ghost" style={{flex:1,fontSize:12}} onClick={testEmail} disabled={testing}>
+          {testing?"Sending…":"📨 Test Email"}
+        </button>}
+      </div>
+
+      <div style={{fontSize:11,color:"#444",cursor:"pointer",textDecoration:"underline",marginBottom:8}}
+        onClick={()=>setShowHow(!showHow)}>
+        {showHow?"▲ Hide setup guide":"▼ How to set up EmailJS (free, 5 min)"}
+      </div>
+
+      {showHow&&(
+        <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:10,padding:"14px",fontSize:11,color:"#666",lineHeight:2}}>
+          <div style={{color:"#a78bfa",fontWeight:700,marginBottom:8}}>Setup (~5 minutes, completely free):</div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>1.</span> Go to <span style={{color:"#60a5fa"}}>emailjs.com</span> → Sign up free</div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>2.</span> Email Services → Add New Service → Gmail → connect <span style={{color:"#4ade80"}}>sahil1987jain@gmail.com</span></div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>3.</span> Copy the <strong style={{color:"#ccc"}}>Service ID</strong> shown → paste above</div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>4.</span> Email Templates → Create New → subject: "WealthVault PIN Reset"</div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>5.</span> Template body (use exactly these variable names):</div>
+          <div style={{background:"#040408",border:"1px solid #111",borderRadius:6,padding:"10px",margin:"6px 0",fontFamily:"'DM Mono',monospace",fontSize:10,color:"#888",lineHeight:1.8,whiteSpace:"pre-wrap"}}>{"Hello {{to_name}},\n\nYour WealthVault PIN reset OTP:\n\n{{otp_code}}\n\nValid for {{expiry_mins}} minutes.\nDo not share this code with anyone."}</div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>6.</span> Set <strong>To Email</strong> field → <span style={{color:"#4ade80"}}>{"{{to_email}}"}</span> → Save template → copy <strong style={{color:"#ccc"}}>Template ID</strong></div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>7.</span> Account → General → copy <strong style={{color:"#ccc"}}>Public Key</strong></div>
+          <div><span style={{color:"#aaa",fontWeight:600}}>8.</span> Paste all 3 → Save → click "Test Email" to verify it works</div>
+          <div style={{marginTop:8,color:"#333",borderTop:"1px solid #111",paddingTop:8}}>Free tier: 200 emails/month · No credit card · Works instantly</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── GOOGLE DRIVE SETTINGS ────────────────────────────────────────────────────
 function GoogleDriveSettings({notify}){
   const [clientId,   setClientId]   = useState(()=>localStorage.getItem("wv_gdrive_client_id")||"");
@@ -9049,6 +9148,10 @@ function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,a
           <div className="stat-card" style={{marginTop:16}}>
             <div className="section-title">🔔 Notification Settings</div>
             <NotificationSettings data={data} setData={setData}/>
+          </div>
+          <div className="stat-card" style={{marginTop:16}}>
+            <div className="section-title">📧 PIN Reset Email (EmailJS)</div>
+            <EmailJSSettings notify={notify}/>
           </div>
           <div className="stat-card" style={{marginTop:16}}>
             <div className="section-title">📁 Google Drive — Document Storage</div>
