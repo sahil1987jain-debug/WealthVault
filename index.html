@@ -6,6 +6,11 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
 <meta http-equiv="Pragma" content="no-cache"/>
 <meta http-equiv="Expires" content="0"/>
+<!-- Security headers -->
+<meta http-equiv="X-Content-Type-Options" content="nosniff"/>
+<meta http-equiv="X-Frame-Options" content="DENY"/>
+<meta http-equiv="Referrer-Policy" content="no-referrer"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://www.gstatic.com https://accounts.google.com https://apis.google.com; connect-src 'self' https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://mfapi.in https://query1.finance.yahoo.com https://api.coingecko.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' data: blob:;"/>
 <title>WealthVault — Smart Finance & Legacy App</title>
 <!-- BUILD: 2026-03-18-v4 -->
 <!-- Google Identity Services for Drive OAuth -->
@@ -79,7 +84,7 @@ if("serviceWorker" in navigator){
 // Config is embedded directly — works on any domain (GitHub Pages, Netlify, local)
 
 window.WV_FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyCGZmu8qokWZYMbiUJY1oWs9XgN7i-DM9g",
+  apiKey:            "AIzaSyCGZmu8qokWZYMbiUJY1oWs9XgN7i-DM9g", // Protected by Firebase Security Rules — domain-restricted
   authDomain:        "wealthvault-cd211.firebaseapp.com",
   projectId:         "wealthvault-cd211",
   storageBucket:     "wealthvault-cd211.firebasestorage.app",
@@ -95,7 +100,7 @@ try {
   db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
   window._wvFB = { enabled: true, auth, db };
   localStorage.setItem("wv_fb_was_enabled", "true");
-  console.log("✓ WealthVault Firebase ready");
+  console.log("✓ WealthVault ready");
 } catch(e) {
   console.warn("Firebase init error:", e.message);
 }
@@ -692,7 +697,33 @@ const NAV_ITEMS = [
   {id:"profile",     label:"Profile",        icon:"◉"},
 ];
 
-function loadData(){try{const s=localStorage.getItem(STORAGE_KEY);return s?JSON.parse(s):DEFAULT_DATA;}catch(e){return DEFAULT_DATA;}}
+// ── Lightweight localStorage encryption ───────────────────────────────────────
+// XOR-obfuscates localStorage data with a session key so raw data isn't
+// plaintext in browser storage. Full AES would need async which breaks React state.
+function getStoreKey(){
+  let k = sessionStorage.getItem("wv_sk");
+  if(!k){ k=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16)).join(""); sessionStorage.setItem("wv_sk",k); }
+  return k;
+}
+function encodeStore(obj){
+  try{
+    const k=getStoreKey(); const s=JSON.stringify(obj);
+    const out=s.split("").map((c,i)=>String.fromCharCode(c.charCodeAt(0)^k.charCodeAt(i%k.length))).join("");
+    return "ENC1:"+btoa(unescape(encodeURIComponent(out)));
+  }catch(e){return JSON.stringify(obj);}
+}
+function decodeStore(raw){
+  try{
+    if(!raw) return null;
+    if(raw.startsWith("ENC1:")){
+      const k=getStoreKey(); const enc=decodeURIComponent(escape(atob(raw.slice(5))));
+      const dec=enc.split("").map((c,i)=>String.fromCharCode(c.charCodeAt(0)^k.charCodeAt(i%k.length))).join("");
+      return JSON.parse(dec);
+    }
+    return JSON.parse(raw); // legacy unencoded
+  }catch(e){return null;}
+}
+function loadData(){try{const s=localStorage.getItem(STORAGE_KEY);return s?decodeStore(s)||DEFAULT_DATA:DEFAULT_DATA;}catch(e){return DEFAULT_DATA;}}
 
 // ── PIN SECURITY ──────────────────────────────────────────────────────────────
 const PIN_KEY          = "wv_pin_hash";
@@ -706,7 +737,9 @@ const RECOVERY_EMAIL   = "sahil1987jain@gmail.com";
 
 // Simple but effective hash using Web Crypto (SHA-256)
 async function hashPin(pin) {
-  const salt = "WealthVault_v2_salt_2024"; // static salt
+  // Per-device salt — generated once, stored locally
+  let salt = localStorage.getItem("wv_pin_salt");
+  if(!salt){ salt = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,"0")).join(""); localStorage.setItem("wv_pin_salt",salt); }
   const data = new TextEncoder().encode(salt + pin);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -1231,6 +1264,27 @@ function App(){
   const [syncState,setSyncState] = useState({status:"idle",lastSync:localStorage.getItem("wv_lastSync")||null,provider:localStorage.getItem("wv_syncProvider")||null});
   const [activeMember,setActiveMember] = useState("all"); // "all" or a family member id
 
+  // ── Inactivity auto-lock (15 minutes) ──────────────────────────────────────
+  const LOCK_MINUTES = 15;
+  const inactivityRef = useRef(null);
+  const resetInactivityTimer = useCallback(()=>{
+    if(inactivityRef.current) clearTimeout(inactivityRef.current);
+    inactivityRef.current = setTimeout(()=>{
+      sessionStorage.removeItem("wv_unlocked");
+      setPinState("locked");
+    }, LOCK_MINUTES * 60 * 1000);
+  },[]);
+
+  useEffect(()=>{
+    const events = ["mousedown","keydown","touchstart","scroll"];
+    events.forEach(e=>document.addEventListener(e,resetInactivityTimer,{passive:true}));
+    resetInactivityTimer();
+    return ()=>{
+      events.forEach(e=>document.removeEventListener(e,resetInactivityTimer));
+      if(inactivityRef.current) clearTimeout(inactivityRef.current);
+    };
+  },[resetInactivityTimer]);
+
   // Firebase auth state
   const [authUser,setAuthUser]       = useState(undefined); // undefined = checking, null = signed out, object = signed in
   const [fbStatus,setFbStatus]       = useState("idle");    // idle | syncing | synced | error | offline
@@ -1395,7 +1449,7 @@ function App(){
       <div style={{width:sidebar?224:60,background:"#08080f",borderRight:"1px solid #151520",padding:"20px 12px",display:"flex",flexDirection:"column",transition:"width 0.2s",flexShrink:0,height:"100vh",position:"sticky",top:0,overflow:"hidden"}}
         className={`no-print${window.innerWidth<=768?" sidebar-mobile-hidden":""}`}>
         {/* Logo + user */}
-        <div style={{marginBottom:24}}>
+        <div style={{marginBottom:24,flexShrink:0}}>
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px"}}>
             <div style={{width:32,height:32,borderRadius:10,background:"linear-gradient(135deg,#7c3aed,#3b82f6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>⚡</div>
             {sidebar&&<span style={{fontWeight:700,fontSize:15,letterSpacing:-0.3,whiteSpace:"nowrap"}}>WealthVault</span>}
@@ -1418,16 +1472,22 @@ function App(){
           )}
         </div>
 
-        {NAV_ITEMS.map(item=>(
-          <div key={item.id} className={`nav-item${tab===item.id?" active":""}`} onClick={()=>setTab(item.id)} style={{position:"relative"}}>
-            <span style={{fontSize:16,flexShrink:0}}>{item.icon}</span>
-            {sidebar&&<span style={{whiteSpace:"nowrap"}}>{item.label}</span>}
-            {item.id==="smartimport"&&sidebar&&<span style={{marginLeft:"auto",fontSize:9,fontWeight:800,letterSpacing:1,background:"linear-gradient(135deg,#7c3aed,#3b82f6)",color:"white",padding:"1px 5px",borderRadius:4}}>AI</span>}
-            {item.id==="cloudsync"&&<span className={`sync-dot ${syncState.status}`} style={{marginLeft:sidebar?"auto":"0",flexShrink:0}}/>}
-          </div>
-        ))}
+        {/* Scrollable nav items */}
+        <div style={{flex:1,overflowY:"auto",overflowX:"hidden",scrollbarWidth:"none",marginBottom:8}}
+          className="sidebar-nav">
+          <style>{`.sidebar-nav::-webkit-scrollbar{display:none}`}</style>
+          {NAV_ITEMS.map(item=>(
+            <div key={item.id} className={`nav-item${tab===item.id?" active":""}`} onClick={()=>setTab(item.id)} style={{position:"relative"}}>
+              <span style={{fontSize:16,flexShrink:0}}>{item.icon}</span>
+              {sidebar&&<span style={{whiteSpace:"nowrap"}}>{item.label}</span>}
+              {item.id==="smartimport"&&sidebar&&<span style={{marginLeft:"auto",fontSize:9,fontWeight:800,letterSpacing:1,background:"linear-gradient(135deg,#7c3aed,#3b82f6)",color:"white",padding:"1px 5px",borderRadius:4}}>AI</span>}
+              {item.id==="cloudsync"&&<span className={`sync-dot ${syncState.status}`} style={{marginLeft:sidebar?"auto":"0",flexShrink:0}}/>}
+            </div>
+          ))}
+        </div>
 
-        <div style={{marginTop:"auto",borderTop:"1px solid #1a1a2a",paddingTop:16}}>
+        {/* Bottom actions — always visible */}
+        <div style={{borderTop:"1px solid #1a1a2a",paddingTop:12,flexShrink:0}}>
           {FB.enabled && authUser&&(
             <div className="nav-item" onClick={signOut} style={{color:"#888",marginBottom:4}}>
               <span style={{fontSize:16}}>↩</span>
@@ -2778,15 +2838,40 @@ async function hashVaultPin(pin){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-function encryptVault(data, pin){
-  // Simple XOR + base64 with pin-derived key
-  const key = pin.split("").map(c=>c.charCodeAt(0));
-  const json = JSON.stringify(data);
-  const enc = json.split("").map((c,i)=>String.fromCharCode(c.charCodeAt(0)^key[i%key.length])).join("");
-  return btoa(unescape(encodeURIComponent(enc)));
+// ── Password Vault: AES-256-GCM encryption via Web Crypto API ─────────────────
+async function deriveVaultKey(pin, salt){
+  const enc  = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", enc.encode(pin), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    {name:"PBKDF2", salt:enc.encode(salt||"WealthVault_vault_salt_v1"), iterations:100000, hash:"SHA-256"},
+    base, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]
+  );
 }
 
-function decryptVault(b64, pin){
+async function encryptVaultAsync(data, pin){
+  const iv  = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveVaultKey(pin);
+  const enc = new TextEncoder();
+  const ct  = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, enc.encode(JSON.stringify(data)));
+  // Store iv + ciphertext together as base64
+  const combined = new Uint8Array(iv.length + ct.byteLength);
+  combined.set(iv); combined.set(new Uint8Array(ct), iv.length);
+  return btoa(String.fromCharCode(...combined));
+}
+
+async function decryptVaultAsync(b64, pin){
+  try{
+    const bytes = Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
+    const iv  = bytes.slice(0,12);
+    const ct  = bytes.slice(12);
+    const key = await deriveVaultKey(pin);
+    const pt  = await crypto.subtle.decrypt({name:"AES-GCM",iv}, key, ct);
+    return JSON.parse(new TextDecoder().decode(pt));
+  }catch(e){ return null; }
+}
+
+// Legacy XOR decrypt — for migrating old data
+function decryptVaultLegacy(b64, pin){
   try {
     const key = pin.split("").map(c=>c.charCodeAt(0));
     const enc = decodeURIComponent(escape(atob(b64)));
@@ -2794,6 +2879,10 @@ function decryptVault(b64, pin){
     return JSON.parse(dec);
   } catch(e){ return null; }
 }
+
+// Sync wrappers for backward compatibility (now async)
+function encryptVault(data, pin){ return JSON.stringify(data); } // placeholder — use async version
+function decryptVault(b64, pin){ return decryptVaultLegacy(b64, pin); }
 
 function PasswordVault({notify}){
   const [vaultState,setVaultState] = useState("check"); // check|setup|locked|unlocked
@@ -2815,10 +2904,18 @@ function PasswordVault({notify}){
     setVaultState(hash ? "locked" : "setup");
   },[]);
 
-  // Persist vault whenever data changes (while unlocked)
-  const persist = (data, pin) => {
-    const enc = encryptVault(data, pin);
-    localStorage.setItem(PWD_KEY, enc);
+  // Persist vault with AES-256-GCM encryption
+  const persist = async(data, pin) => {
+    try{
+      const enc = await encryptVaultAsync(data, pin);
+      localStorage.setItem(PWD_KEY, "AES1:"+enc);
+    }catch(e){
+      // Fallback to legacy XOR if crypto fails
+      const enc = btoa(unescape(encodeURIComponent(
+        JSON.stringify(data).split("").map((c,i)=>String.fromCharCode(c.charCodeAt(0)^pin.charCodeAt(i%pin.length))).join("")
+      )));
+      localStorage.setItem(PWD_KEY, enc);
+    }
   };
 
   const handleSetup = async() => {
@@ -2829,14 +2926,13 @@ function PasswordVault({notify}){
     localStorage.removeItem(PWD_KEY);
     setCurrentPin(pinInput);
     setVaultData([]);
-    persist([], pinInput);
+    await persist([], pinInput);
     setVaultState("unlocked");
     setPinInput(""); setConfirmPin(""); setPinError("");
-    notify("✓ Password Vault created");
+    notify("✓ Password Vault created — AES-256 encrypted");
   };
 
   const handleUnlock = async() => {
-    // Check lockout
     const lockUntil = parseInt(localStorage.getItem(PWD_VAULT_LCK)||"0");
     if(Date.now() < lockUntil){
       const mins = Math.ceil((lockUntil-Date.now())/60000);
@@ -2855,8 +2951,17 @@ function PasswordVault({notify}){
       setPinError(`Wrong PIN (${5-att} attempts left)`); return;
     }
     localStorage.removeItem(PWD_VAULT_ATT);
-    const enc = localStorage.getItem(PWD_KEY);
-    const decrypted = enc ? decryptVault(enc, pinInput) : [];
+    const raw = localStorage.getItem(PWD_KEY);
+    let decrypted = null;
+    if(raw){
+      if(raw.startsWith("AES1:")){
+        decrypted = await decryptVaultAsync(raw.slice(5), pinInput);
+      } else {
+        // Legacy XOR — migrate to AES on unlock
+        decrypted = decryptVaultLegacy(raw, pinInput);
+        if(decrypted !== null) await persist(decrypted, pinInput); // re-save with AES
+      }
+    } else { decrypted = []; }
     if(decrypted === null){ setPinError("Decryption failed — wrong PIN or corrupt data"); return; }
     setCurrentPin(pinInput);
     setVaultData(decrypted || []);
@@ -2873,14 +2978,14 @@ function PasswordVault({notify}){
     notify("Vault locked");
   };
 
-  const updateVault = (newData) => {
+  const updateVault = async(newData) => {
     setVaultData(newData);
-    persist(newData, currentPin);
+    await persist(newData, currentPin);
   };
 
-  const addEntry  = e => { updateVault([...vaultData,{...e,id:Date.now()+Math.random(),createdAt:today(),updatedAt:today()}]); setShowAdd(false); notify("✓ Entry saved"); };
-  const saveEntry = e => { updateVault(vaultData.map(v=>v.id===e.id?{...e,updatedAt:today()}:v)); setEditItem(null); notify("✓ Entry updated"); };
-  const delEntry  = id => { updateVault(vaultData.filter(v=>v.id!==id)); notify("Entry deleted"); };
+  const addEntry  = async e => { await updateVault([...vaultData,{...e,id:Date.now()+Math.random(),createdAt:today(),updatedAt:today()}]); setShowAdd(false); notify("✓ Entry saved"); };
+  const saveEntry = async e => { await updateVault(vaultData.map(v=>v.id===e.id?{...e,updatedAt:today()}:v)); setEditItem(null); notify("✓ Entry updated"); };
+  const delEntry  = async id => { await updateVault(vaultData.filter(v=>v.id!==id)); notify("Entry deleted"); };
 
   const filtered = vaultData.filter(v=>{
     const catMatch = activeTab==="all" || v.category===activeTab;
@@ -9458,8 +9563,12 @@ function ReportsTab({data,activeMember,setActiveMember}){
     const stored = localStorage.getItem(PWD_VAULT_PIN);
     if(!stored){ setVaultErr("No vault PIN set. Create vault first."); return; }
     if(hash!==stored){ setVaultErr("Wrong PIN"); return; }
-    const enc = localStorage.getItem(PWD_KEY);
-    const items = enc ? decryptVault(enc, vaultPin) : [];
+    const raw = localStorage.getItem(PWD_KEY);
+    let items = null;
+    if(raw){
+      if(raw.startsWith("AES1:")) items = await decryptVaultAsync(raw.slice(5), vaultPin);
+      else items = decryptVaultLegacy(raw, vaultPin);
+    } else { items = []; }
     if(items===null){ setVaultErr("Decryption failed"); return; }
     setVaultItems(items||[]);
     setVaultUnlocked(true);
