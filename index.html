@@ -276,6 +276,65 @@ const fmtS = n => {
 };
 const today = () => new Date().toISOString().split("T")[0];
 
+// ── Unified AI caller — auto-detects Claude (sk-ant-) or Gemini (AIzaSy) ─────
+// Usage: await callAI(apiKey, prompt, imageParts)
+// Returns: { text } or throws Error
+async function callAI(apiKey, prompt, imageParts=[]) {
+  if(!apiKey||!apiKey.trim()) throw new Error("No API key set. Go to Profile → AI API Key.");
+  const key = apiKey.trim();
+
+  // ── Claude ────────────────────────────────────────────────────────────────
+  if(key.startsWith("sk-ant-")) {
+    const content = [...imageParts, {type:"text",text:prompt}];
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "x-api-key": key,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true"
+      },
+      body: JSON.stringify({model:"claude-sonnet-4-6", max_tokens:16000, messages:[{role:"user",content}]})
+    });
+    if(!resp.ok){
+      const e = await resp.json().catch(()=>({}));
+      const msg = e?.error?.message||"";
+      if(resp.status===401) throw new Error("Claude API key rejected. Re-enter it in Profile.");
+      throw new Error(`Claude API error ${resp.status}: ${msg}`);
+    }
+    const data = await resp.json();
+    return {text: data.content.map(c=>c.text||"").join("")};
+  }
+
+  // ── Gemini ────────────────────────────────────────────────────────────────
+  if(key.startsWith("AIzaSy")) {
+    const parts = [];
+    // Convert Claude-style image parts to Gemini format
+    imageParts.forEach(p=>{
+      if(p.type==="image") parts.push({inlineData:{mimeType:p.source.media_type, data:p.source.data}});
+      if(p.type==="document") parts.push({inlineData:{mimeType:"application/pdf", data:p.source.data}});
+    });
+    parts.push({text: prompt});
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+      {method:"POST", headers:{"Content-Type":"application/json"},
+       body: JSON.stringify({contents:[{parts}], generationConfig:{maxOutputTokens:8192}})}
+    );
+    if(!resp.ok){
+      const e = await resp.json().catch(()=>({}));
+      const msg = e?.error?.message||"";
+      if(resp.status===400&&msg.includes("API_KEY")) throw new Error("Gemini API key rejected. Re-enter it in Profile.");
+      if(resp.status===403) throw new Error("Gemini API key invalid or not enabled. Check aistudio.google.com.");
+      throw new Error(`Gemini API error ${resp.status}: ${msg}`);
+    }
+    const data = await resp.json();
+    const text = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
+    return {text};
+  }
+
+  throw new Error("Unknown API key format. Use Claude key (sk-ant-...) or Gemini key (AIzaSy...).");
+}
+
 // Financial Year helpers (India: Apr 1 – Mar 31)
 const getFY = (date) => {
   const d = date ? new Date(date) : new Date();
@@ -1187,8 +1246,8 @@ function App(){
           <div style={{background:"linear-gradient(135deg,#1e1b4b,#2e1065)",border:"1px solid #4f46e5",borderRadius:14,padding:"14px 20px",marginBottom:20,display:"flex",alignItems:"center",gap:14}}>
             <span style={{fontSize:20}}>🔑</span>
             <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:600}}>Add your Claude API key to enable AI-powered Smart Import</div>
-              <div style={{fontSize:11,color:"#888",marginTop:2}}>Automatically extract assets, liabilities, income & expenses from any document</div>
+              <div style={{fontSize:13,fontWeight:600}}>Add an AI key to enable Smart Import</div>
+              <div style={{fontSize:11,color:"#888",marginTop:2}}>Free: Gemini key from aistudio.google.com · Paid: Claude key from console.anthropic.com</div>
             </div>
             <button className="btn btn-primary" onClick={()=>setTab("profile")}>Add API Key →</button>
           </div>
@@ -1397,7 +1456,8 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
   };
 
   const parseDocuments=async()=>{
-    if(!apiKey){notify("Please add your Claude API key in Profile settings","error");return;}
+    if(!apiKey||!apiKey.trim()){notify("Please add your AI API key in Profile settings","error");return;}
+    if(!apiKey.trim().startsWith("sk-ant-")&&!apiKey.trim().startsWith("AIzaSy")){notify("Unknown key format. Use Claude key (sk-ant-...) or Gemini key (AIzaSy...).","error");return;}
     if(files.length===0){notify("Please upload at least one document","error");return;}
     setParsing(true);setStage("parsing");setParseLog("Reading document(s)...");
     setPwdError(null);
@@ -1556,68 +1616,20 @@ General rules:
 - Return ONLY the JSON object, nothing else, with no extra whitespace in field values
 `});
 
-      setParseLog("Sending to Claude AI for analysis...");
+      const aiProvider = apiKey.trim().startsWith("AIzaSy") ? "Gemini" : "Claude";
+      setParseLog(`Sending to ${aiProvider} AI for analysis...`);
 
-      let resp;
+      let rawText;
       try {
-        resp = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true"
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-6",
-            max_tokens: 16000,
-            messages: [{ role: "user", content: contentParts }]
-          })
-        });
-      } catch(networkErr) {
-        throw new Error("Network error — check your internet connection. " + networkErr.message);
+        // Extract text/image parts for callAI
+        const textPromptPart = contentParts.find(p=>p.type==="text")?.text||"";
+        const mediaPartsForAI = contentParts.filter(p=>p.type!=="text");
+        const aiResult = await callAI(apiKey, textPromptPart, mediaPartsForAI);
+        rawText = aiResult.text.trim();
+      } catch(aiErr) {
+        if(aiErr.message?.startsWith("PDF_PASSWORD_REQUIRED:")) throw aiErr;
+        throw new Error(aiErr.message||"AI API error");
       }
-
-      if (!resp.ok) {
-        let errMsg = `API error ${resp.status}`;
-        try {
-          const errBody = await resp.json();
-          errMsg = errBody?.error?.message || errMsg;
-          if (resp.status === 401) errMsg = "Invalid API key. Please check your key in Profile settings.";
-          if (resp.status === 529 || resp.status === 503) errMsg = "Claude API is overloaded. Please try again in a moment.";
-          // Detect password-protected PDF error from API
-          if (resp.status === 400 && errMsg.toLowerCase().includes("password")) {
-            // Find the PDF file that caused this
-            const pdfFile = files.find(f=>f.type.includes("pdf") && !filePwds[f.name]);
-            if(pdfFile){
-              setPwdError(pdfFile.name);
-              setStage("upload");
-              setParsing(false);
-              setParseLog("");
-              throw new Error(`PDF_PASSWORD_REQUIRED:${pdfFile.name}`);
-            }
-          }
-          if (resp.status === 400) errMsg = "Bad request: " + errMsg;
-        } catch(e) {
-          if(e.message?.startsWith("PDF_PASSWORD_REQUIRED:")) throw e;
-        }
-        throw new Error(errMsg);
-      }
-
-      const result = await resp.json();
-      setParseLog("Parsing AI response...");
-
-      if (!result.content || result.content.length === 0) {
-        throw new Error("Empty response from Claude API. Please try again.");
-      }
-
-      // Check if response was cut off due to token limit
-      const wasTruncated = result.stop_reason === "max_tokens";
-      if (wasTruncated) {
-        setParseLog("⚠ Response was very large — attempting to recover partial data...");
-      }
-
-      const rawText = result.content.map(c => c.text || "").join("").trim();
 
       // Robustly extract JSON — try multiple strategies in order
       let jsonStr = null;
@@ -4582,15 +4594,11 @@ function AssetUploadZone({cat, onParsed, notify, apiKey}){
         contentPart = {type:"text",text:`File: ${file.name}\n\n${txt.slice(0,60000)}`};
       }
       setLog("AI is reading your statement…");
-      const prompt = {type:"text",text:`You are extracting ${cat} holdings from this document for an Indian personal finance app.\nReturn ONLY a valid JSON array of holdings (no markdown, no explanation):\n[\n  {\n    "name": "holding name",\n    "value": 0,\n    "qty": 0,\n    "buyPrice": 0,\n    "ticker": "",\n    "broker": "",\n    "folio": "",\n    "units": 0,\n    "nav": 0,\n    "invested": 0,\n    "intRate": 0,\n    "matDate": "",\n    "buyDate": "",\n    "details": "brief description",\n    "confidence": "high|medium|low"\n  }\n]\nExtract every individual holding. All amounts as plain numbers. Leave unknown fields as empty string or 0.`};
-      const resp = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:3000,messages:[{role:"user",content:[contentPart,prompt]}]})
-      });
-      if(!resp.ok){const e=await resp.json();throw new Error(e?.error?.message||"API error "+resp.status);}
-      const result = await resp.json();
-      const raw = result.content.map(c=>c.text||"").join("").trim();
+      const prompt = `You are extracting ${cat} holdings from this document for an Indian personal finance app.\nReturn ONLY a valid JSON array of holdings (no markdown, no explanation):\n[\n  {\n    "name": "holding name",\n    "value": 0,\n    "qty": 0,\n    "buyPrice": 0,\n    "ticker": "",\n    "broker": "",\n    "folio": "",\n    "units": 0,\n    "nav": 0,\n    "invested": 0,\n    "intRate": 0,\n    "matDate": "",\n    "buyDate": "",\n    "details": "brief description",\n    "confidence": "high|medium|low"\n  }\n]\nExtract every individual holding. All amounts as plain numbers. Leave unknown fields as empty string or 0.`;
+      const mediaParts = contentPart.type!=="text" ? [contentPart] : [];
+      const textForAI  = contentPart.type==="text" ? contentPart.text : "";
+      const aiResult = await callAI(apiKey, textForAI ? textForAI+"\n\n"+prompt : prompt, mediaParts);
+      const raw = aiResult.text.trim();
       const arrStart=raw.indexOf("["),arrEnd=raw.lastIndexOf("]");
       if(arrStart===-1) throw new Error("No data extracted from document");
       const parsed = JSON.parse(raw.slice(arrStart,arrEnd+1));
@@ -6084,9 +6092,11 @@ function LiabUploadZone({cat, onParsed, notify, apiKey}){
       if(file.type.includes("pdf")){const b64=await new Promise((r,rj)=>{const rd=new FileReader();rd.onload=()=>r(rd.result.split(",")[1]);rd.onerror=rj;rd.readAsDataURL(file);});part={type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}};}
       else if(file.type.includes("image")){const b64=await new Promise((r,rj)=>{const rd=new FileReader();rd.onload=()=>r(rd.result.split(",")[1]);rd.onerror=rj;rd.readAsDataURL(file);});part={type:"image",source:{type:"base64",media_type:file.type.includes("png")?"image/png":"image/jpeg",data:b64}};}
       else{const txt=await new Promise((r,rj)=>{const rd=new FileReader();rd.onload=()=>r(rd.result);rd.onerror=rj;rd.readAsText(file);});part={type:"text",text:txt.slice(0,60000)};}
-      const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:2000,messages:[{role:"user",content:[part,{type:"text",text:`Extract all ${cat} details from this document. Return ONLY a JSON array: [{"name":"","value":0,"lender":"","emi":0,"intRate":0,"origAmt":0,"startDate":"","endDate":"","details":""}]. All amounts as plain numbers.`}]}]})});
-      const result=await resp.json();
-      const raw=result.content.map(c=>c.text||"").join("");
+      const prompt = `Extract all ${cat} details from this document. Return ONLY a JSON array: [{"name":"","value":0,"lender":"","emi":0,"intRate":0,"origAmt":0,"startDate":"","endDate":"","details":""}]. All amounts as plain numbers.`;
+      const mediaParts = part.type!=="text" ? [part] : [];
+      const textPart   = part.type==="text"  ? part.text : "";
+      const aiResult = await callAI(apiKey, textPart ? textPart+"\n\n"+prompt : prompt, mediaParts);
+      const raw=aiResult.text;
       const s=raw.indexOf("["),e=raw.lastIndexOf("]");
       if(s===-1)throw new Error("No data found");
       const parsed=JSON.parse(raw.slice(s,e+1));
@@ -7298,18 +7308,16 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
     if(!smsText.trim()){notify("Paste your SMS messages first","error");return;}
     setSmsParsing(true);
     let txns=[];
-    if(apiKey){
+    const hasValidKey = apiKey && (apiKey.trim().startsWith("sk-ant-")||apiKey.trim().startsWith("AIzaSy"));
+    if(hasValidKey){
       try{
         const prompt=`Extract ALL bank/payment transactions from these SMS messages. Return ONLY a valid JSON array, no markdown, no explanation.
 Include only transactions between ${smsFromDate} and ${smsToDate}.
 Each item: {"name":"merchant","amount":number,"date":"YYYY-MM-DD","type":"expense|credit","category":"one of [EMI,Groceries,Utilities,Insurance Premium,SIP/Investment,Medical,Dining,Transport,Shopping,Entertainment,Education,Travel,Other Expense] for expense or Other Income for credit","raw":"first 50 chars of SMS"}
 SMS:
 ${smsText.slice(0,8000)}`;
-        const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
-          headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-          body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4000,messages:[{role:"user",content:prompt}]})});
-        const result=await resp.json();
-        const raw=result.content.map(c=>c.text||"").join("");
+        const aiResult = await callAI(apiKey, prompt);
+        const raw = aiResult.text;
         const s=raw.indexOf("["),e=raw.lastIndexOf("]");
         if(s!==-1){ txns=JSON.parse(raw.slice(s,e+1)).filter(t=>t.amount>0).map((t,i)=>({...t,id:`ai_${i}_${Date.now()}`})); }
         else throw new Error("No JSON");
@@ -7964,20 +7972,40 @@ function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,a
       <div className="stat-card" style={{marginBottom:20,background:"linear-gradient(135deg,#0d0d2e,#1a0a2e)",border:"1px solid #3730a3"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
           <span className="ai-badge">✦ AI Smart Import</span>
-          <span style={{fontSize:12,color:"#666"}}>Requires Claude API key</span>
+          <span style={{fontSize:12,color:"#666"}}>Claude or Gemini key</span>
         </div>
-        <div style={{fontSize:12,color:"#888",marginBottom:12,lineHeight:1.7}}>
-          Get your free API key at <strong style={{color:"#a78bfa"}}>console.anthropic.com</strong> → API Keys → Create Key.<br/>
-          Your key is stored locally in your browser only. It is never sent anywhere except directly to Anthropic's API.
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:4}}>Gemini (Free)</div>
+            <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
+              aistudio.google.com<br/>→ Get API Key → Create<br/>
+              <span style={{color:"#4ade80"}}>Free tier: 1500 req/day</span>
+            </div>
+          </div>
+          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:4}}>Claude (Paid)</div>
+            <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
+              console.anthropic.com<br/>→ API Keys → Create Key<br/>
+              <span style={{color:"#fbbf24"}}>~₹0.80 per import</span>
+            </div>
+          </div>
+        </div>
+        <div style={{fontSize:11,color:"#555",marginBottom:10}}>
+          Paste either key below — the app detects which one automatically.
         </div>
         <div style={{display:"flex",gap:10}}>
           <div style={{flex:1,position:"relative"}}>
-            <input className="input" type={showKey?"text":"password"} value={keyInput} onChange={e=>setKeyInput(e.target.value)} placeholder="sk-ant-..."/>
+            <input className="input" type={showKey?"text":"password"} value={keyInput} onChange={e=>setKeyInput(e.target.value)}
+              placeholder="AIzaSy... (Gemini) or sk-ant-... (Claude)"/>
             <span onClick={()=>setShowKey(!showKey)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#555",fontSize:14}}>{showKey?"🙈":"👁"}</span>
           </div>
-          <button className="btn btn-primary" onClick={()=>{saveApiKey(keyInput);notify("API key saved");}}>Save Key</button>
+          <button className="btn btn-primary" onClick={()=>{saveApiKey(keyInput);notify("✓ API key saved");}}>Save</button>
         </div>
-        {apiKey&&<div style={{fontSize:11,color:"#4ade80",marginTop:8}}>✓ API key is set — Smart Import is ready</div>}
+        {apiKey&&(
+          <div style={{fontSize:11,color:"#4ade80",marginTop:8}}>
+            ✓ {apiKey.trim().startsWith("AIzaSy")?"Gemini":"Claude"} key active — Smart Import ready
+          </div>
+        )}
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
