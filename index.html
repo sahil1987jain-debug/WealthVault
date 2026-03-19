@@ -276,9 +276,9 @@ const fmtS = n => {
 };
 const today = () => new Date().toISOString().split("T")[0];
 
-// ── Unified AI caller — auto-detects Claude (sk-ant-) or Gemini (AIzaSy) ─────
+// ── Unified AI caller — auto-detects key type ────────────────────────────────
+// Supports: Claude (sk-ant-), Gemini (AIzaSy), Groq (gsk_)
 // Usage: await callAI(apiKey, prompt, imageParts)
-// Returns: { text } or throws Error
 async function callAI(apiKey, prompt, imageParts=[]) {
   if(!apiKey||!apiKey.trim()) throw new Error("No API key set. Go to Profile → AI API Key.");
   const key = apiKey.trim();
@@ -303,36 +303,78 @@ async function callAI(apiKey, prompt, imageParts=[]) {
       throw new Error(`Claude API error ${resp.status}: ${msg}`);
     }
     const data = await resp.json();
-    return {text: data.content.map(c=>c.text||"").join("")};
+    return {
+      text: data.content.map(c=>c.text||"").join(""),
+      truncated: data.stop_reason==="max_tokens"
+    };
   }
 
   // ── Gemini ────────────────────────────────────────────────────────────────
   if(key.startsWith("AIzaSy")) {
+    // Try models in order — fallback if one has quota issues
+    const models = ["gemini-1.5-flash","gemini-2.0-flash","gemini-1.5-flash-8b"];
     const parts = [];
-    // Convert Claude-style image parts to Gemini format
     imageParts.forEach(p=>{
       if(p.type==="image") parts.push({inlineData:{mimeType:p.source.media_type, data:p.source.data}});
       if(p.type==="document") parts.push({inlineData:{mimeType:"application/pdf", data:p.source.data}});
     });
     parts.push({text: prompt});
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-      {method:"POST", headers:{"Content-Type":"application/json"},
-       body: JSON.stringify({contents:[{parts}], generationConfig:{maxOutputTokens:8192}})}
-    );
+    let lastErr = "";
+    for(const model of models){
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        {method:"POST", headers:{"Content-Type":"application/json"},
+         body: JSON.stringify({contents:[{parts}], generationConfig:{maxOutputTokens:8192}})}
+      );
+      if(resp.status===429||resp.status===503){
+        const e = await resp.json().catch(()=>({}));
+        lastErr = e?.error?.message||`${model} quota exceeded`;
+        continue; // try next model
+      }
+      if(!resp.ok){
+        const e = await resp.json().catch(()=>({}));
+        const msg = e?.error?.message||"";
+        if(resp.status===400&&msg.includes("API_KEY")) throw new Error("Gemini API key rejected. Re-enter it in Profile.");
+        if(resp.status===403) throw new Error("Gemini free tier not available in your region. Enable billing at console.cloud.google.com, or use a Groq key (gsk_...) which is free in India — get one at console.groq.com");
+        throw new Error(`Gemini API error ${resp.status}: ${msg}`);
+      }
+      const data = await resp.json();
+      const text = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
+      return {text};
+    }
+    throw new Error(`Gemini quota exceeded on all models. Try again in 1 minute, or switch to Groq (free in India) — get a key at console.groq.com and paste it in Profile.`);
+  }
+
+  // ── Groq (free, works in India, no billing needed) ────────────────────────
+  if(key.startsWith("gsk_")) {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization": `Bearer ${key}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        max_tokens: 8000,
+        response_format: {type: "json_object"},
+        messages:[
+          {role:"system", content:"You are a JSON extraction API. You output ONLY valid JSON objects. No explanations, no markdown, no prose. Just raw JSON."},
+          {role:"user", content: prompt}
+        ]
+      })
+    });
     if(!resp.ok){
       const e = await resp.json().catch(()=>({}));
       const msg = e?.error?.message||"";
-      if(resp.status===400&&msg.includes("API_KEY")) throw new Error("Gemini API key rejected. Re-enter it in Profile.");
-      if(resp.status===403) throw new Error("Gemini API key invalid or not enabled. Check aistudio.google.com.");
-      throw new Error(`Gemini API error ${resp.status}: ${msg}`);
+      if(resp.status===401) throw new Error("Groq API key rejected. Re-enter it in Profile.");
+      if(resp.status===429) throw new Error("Groq rate limit hit. Wait 1 minute and try again.");
+      throw new Error(`Groq API error ${resp.status}: ${msg}`);
     }
     const data = await resp.json();
-    const text = data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
-    return {text};
+    return {text: data.choices?.[0]?.message?.content||""};
   }
 
-  throw new Error("Unknown API key format. Use Claude key (sk-ant-...) or Gemini key (AIzaSy...).");
+  throw new Error("Unknown API key format. Supported: Claude (sk-ant-...), Gemini (AIzaSy...), Groq (gsk_...). Get a free Groq key at console.groq.com");
 }
 
 // Financial Year helpers (India: Apr 1 – Mar 31)
@@ -1247,7 +1289,7 @@ function App(){
             <span style={{fontSize:20}}>🔑</span>
             <div style={{flex:1}}>
               <div style={{fontSize:13,fontWeight:600}}>Add an AI key to enable Smart Import</div>
-              <div style={{fontSize:11,color:"#888",marginTop:2}}>Free: Gemini key from aistudio.google.com · Paid: Claude key from console.anthropic.com</div>
+              <div style={{fontSize:11,color:"#888",marginTop:2}}>🆓 Free in India: Groq key from console.groq.com (gsk_...) · Or Gemini/Claude key</div>
             </div>
             <button className="btn btn-primary" onClick={()=>setTab("profile")}>Add API Key →</button>
           </div>
@@ -1403,7 +1445,25 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     return images; // array of base64 JPEG strings
   };
 
-  // Convert XLSX/XLS to readable text using SheetJS
+  // Extract plain text from PDF using PDF.js (for text-only AI like Groq)
+  const extractPDFText = async(file, password) => {
+    if(!window.pdfjsLib) throw new Error("PDF.js not loaded. Please refresh.");
+    const arrayBuffer = await readFileAsArrayBuffer(file);
+    const pdf = await window.pdfjsLib.getDocument({data:arrayBuffer, password:password||""}).promise.catch(err=>{
+      if(err?.name==="PasswordException") throw new Error("PDF_PASSWORD_WRONG");
+      throw err;
+    });
+    const numPages = Math.min(pdf.numPages, 30);
+    let text = `PDF: ${file.name}\n\n`;
+    for(let pg=1; pg<=numPages; pg++){
+      setParseLog(`Reading page ${pg}/${numPages} of ${file.name}…`);
+      const page = await pdf.getPage(pg);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(i=>i.str).join(" ");
+      text += `--- Page ${pg} ---\n${pageText}\n\n`;
+    }
+    return text.slice(0, 80000);
+  };
   const readXLSXasText=async(file, password)=>{
     if(!window.XLSX) throw new Error("SheetJS library not loaded. Please refresh the page.");
     const buf=await readFileAsArrayBuffer(file);
@@ -1457,7 +1517,7 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
 
   const parseDocuments=async()=>{
     if(!apiKey||!apiKey.trim()){notify("Please add your AI API key in Profile settings","error");return;}
-    if(!apiKey.trim().startsWith("sk-ant-")&&!apiKey.trim().startsWith("AIzaSy")){notify("Unknown key format. Use Claude key (sk-ant-...) or Gemini key (AIzaSy...).","error");return;}
+    if(!apiKey.trim().startsWith("sk-ant-")&&!apiKey.trim().startsWith("AIzaSy")&&!apiKey.trim().startsWith("gsk_")){notify("Unknown key format. Use Claude (sk-ant-...), Gemini (AIzaSy...) or Groq (gsk_...) key.","error");return;}
     if(files.length===0){notify("Please upload at least one document","error");return;}
     setParsing(true);setStage("parsing");setParseLog("Reading document(s)...");
     setPwdError(null);
@@ -1465,24 +1525,32 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     try {
       const messages=[];
       const contentParts=[];
+      const isGroq = apiKey.trim().startsWith("gsk_");
 
       for(const file of files){
         setParseLog(`Processing: ${file.name}...`);
         if(file.type.includes("image")){
+          if(isGroq){
+            notify("⚠ Groq cannot read image files. Please use a PDF, Excel or CSV file instead, or switch to Claude/Gemini key for image support.","error");
+            setParsing(false); setStage("upload"); return;
+          }
           const b64=await readFileAsBase64(file);
           const mt=file.type.includes("png")?"image/png":file.type.includes("webp")?"image/webp":"image/jpeg";
           contentParts.push({type:"image",source:{type:"base64",media_type:mt,data:b64}});
         } else if(file.type.includes("pdf")){
           const pwd=filePwds[file.name]||"";
-          if(pwd){
-            // Password provided → render pages to images via PDF.js
+          if(isGroq){
+            // Groq: extract text from PDF instead of sending binary
+            setParseLog(`Extracting text from PDF: ${file.name}...`);
+            const pdfText = await extractPDFText(file, pwd);
+            contentParts.push({type:"text",text:pdfText});
+          } else if(pwd){
             const images=await renderPDFToImages(file, pwd);
             setParseLog(`Rendered ${images.length} pages from ${file.name}, sending to AI…`);
             images.forEach(b64=>{
               contentParts.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:b64}});
             });
           } else {
-            // No password → try sending as raw PDF (may fail if protected)
             const b64=await readFileAsBase64(file);
             contentParts.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});
           }
@@ -1492,7 +1560,6 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
           const text=await readXLSXasText(file, pwd);
           contentParts.push({type:"text",text:`EXCEL FILE: ${file.name}\n\n${text}`});
         } else {
-          // CSV / TXT
           const text=await readFileAsText(file);
           const trimmed=text.length>80000?text.slice(0,80000)+"\n[truncated]":text;
           contentParts.push({type:"text",text:`FILE: ${file.name}\n\n${trimmed}`});
@@ -1501,7 +1568,29 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
 
       const docTypeHint=docType==="auto"?"(auto-detect the document type)":(`This is a: ${DOC_TYPES.find(d=>d.id===docType)?.label}`);
 
-      contentParts.push({type:"text",text:`
+      // Groq/Llama needs a simpler, more direct prompt — complex schemas confuse it
+      // Groq/Llama needs a completely different approach:
+      // 1. Put the document text FIRST, then the instruction
+      // 2. Use "complete this JSON" framing — Llama is a completion model at heart
+      // 3. Start the JSON in the prompt so Llama just continues it
+      const docTextParts = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n\n");
+      const groqPrompt = `DOCUMENT:
+${docTextParts}
+
+TASK: Extract financial data from the above document. Fill in the JSON below with real values from the document. Output ONLY the completed JSON. Do not write any explanation before or after the JSON.
+
+{"documentType":"${docType==="auto"?"detect from document":DOC_TYPES.find(d=>d.id===docType)?.label||"Other"}","documentSummary":"<one line>","assets":[{"category":"Home Loan detected=use liabilities not assets","name":"","value":0,"qty":0,"buyPrice":0,"ticker":"","units":0,"nav":0,"invested":0,"intRate":0,"matDate":"","details":"","confidence":"high"}],"liabilities":[{"category":"<Home Loan|Car Loan|Personal Loan|Credit Cards|Education Loan|Other Debt>","name":"<loan description>","value":<outstanding balance as number>,"emi":<monthly emi as number>,"intRate":<interest rate as number>,"origAmt":<original loan amount as number>,"details":"<key details>","confidence":"high"}],"income":[],"expenses":[],"insurance":[]}
+
+RULES:
+- value = outstanding balance (what is still owed), not original amount
+- emi = monthly payment amount
+- intRate = interest rate percentage (number only, e.g. 8.5)
+- origAmt = original loan amount sanctioned
+- All numbers must be plain digits with no ₹ or commas
+- Use [] for categories with no data
+- Output ONLY the JSON starting with { and ending with }`;
+
+      const fullPrompt = `
 You are a personal finance data extraction engine for Indian users.
 ${docTypeHint}
 
@@ -1520,7 +1609,6 @@ JSON schema:
       "category": "one of: Real Estate | Stocks | Mutual Funds | Fixed Deposits | Gold | EPF/PPF | Bank Savings | NPS | Crypto | Other",
       "name": "full company/fund name",
       "value": 0,
-
       "ticker": "NSE/BSE ticker symbol if Stocks (e.g. RELIANCE, INFY, HDFCBANK)",
       "isin": "12-character ISIN code if present (e.g. INE002A01018)",
       "exchange": "NSE or BSE if Stocks",
@@ -1528,17 +1616,14 @@ JSON schema:
       "qty": 0,
       "buyPrice": 0,
       "buyDate": "YYYY-MM-DD or empty string",
-
       "schemeCode": "AMFI/MFAPI numeric scheme code if Mutual Fund (e.g. 120586)",
       "folio": "folio number if Mutual Fund",
       "units": 0,
       "nav": 0,
       "invested": 0,
-
       "acNo": "last 4 digits of account number if Bank/FD",
       "intRate": 0,
       "matDate": "YYYY-MM-DD or empty string",
-
       "details": "any extra info — account number last 4 digits, broker, notes",
       "confidence": "high | medium | low",
       "source": "what line/section of document this came from"
@@ -1614,18 +1699,30 @@ General rules:
 - If no items found for a category, return empty array []
 - Be concise in "details" and "source" fields — one short phrase only
 - Return ONLY the JSON object, nothing else, with no extra whitespace in field values
-`});
+`;
 
-      const aiProvider = apiKey.trim().startsWith("AIzaSy") ? "Gemini" : "Claude";
+      const finalPrompt = isGroq ? groqPrompt : fullPrompt;
+      contentParts.push({type:"text", text: finalPrompt});
+
+      const aiProvider = apiKey.trim().startsWith("AIzaSy") ? "Gemini" : apiKey.trim().startsWith("gsk_") ? "Groq" : "Claude";
       setParseLog(`Sending to ${aiProvider} AI for analysis...`);
 
       let rawText;
+      let wasTruncated = false;
       try {
-        // Extract text/image parts for callAI
-        const textPromptPart = contentParts.find(p=>p.type==="text")?.text||"";
-        const mediaPartsForAI = contentParts.filter(p=>p.type!=="text");
-        const aiResult = await callAI(apiKey, textPromptPart, mediaPartsForAI);
+        let aiResult;
+        if(isGroq){
+          // Groq: send the groqPrompt as a single self-contained message
+          // Document text is already embedded inside groqPrompt
+          aiResult = await callAI(apiKey, groqPrompt, []);
+        } else {
+          // Claude/Gemini: send media parts + text prompt separately
+          const textPromptPart = contentParts.find(p=>p.type==="text")?.text||"";
+          const mediaPartsForAI = contentParts.filter(p=>p.type!=="text");
+          aiResult = await callAI(apiKey, textPromptPart, mediaPartsForAI);
+        }
         rawText = aiResult.text.trim();
+        wasTruncated = aiResult.truncated||false;
       } catch(aiErr) {
         if(aiErr.message?.startsWith("PDF_PASSWORD_REQUIRED:")) throw aiErr;
         throw new Error(aiErr.message||"AI API error");
@@ -7308,7 +7405,7 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
     if(!smsText.trim()){notify("Paste your SMS messages first","error");return;}
     setSmsParsing(true);
     let txns=[];
-    const hasValidKey = apiKey && (apiKey.trim().startsWith("sk-ant-")||apiKey.trim().startsWith("AIzaSy"));
+    const hasValidKey = apiKey && (apiKey.trim().startsWith("sk-ant-")||apiKey.trim().startsWith("AIzaSy")||apiKey.trim().startsWith("gsk_"));
     if(hasValidKey){
       try{
         const prompt=`Extract ALL bank/payment transactions from these SMS messages. Return ONLY a valid JSON array, no markdown, no explanation.
@@ -7972,38 +8069,48 @@ function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,a
       <div className="stat-card" style={{marginBottom:20,background:"linear-gradient(135deg,#0d0d2e,#1a0a2e)",border:"1px solid #3730a3"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
           <span className="ai-badge">✦ AI Smart Import</span>
-          <span style={{fontSize:12,color:"#666"}}>Claude or Gemini key</span>
+          <span style={{fontSize:12,color:"#666"}}>Claude · Gemini · Groq</span>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px"}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:4}}>Gemini (Free)</div>
-            <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
-              aistudio.google.com<br/>→ Get API Key → Create<br/>
-              <span style={{color:"#4ade80"}}>Free tier: 1500 req/day</span>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 10px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#4ade80",marginBottom:4}}>🆓 Groq</div>
+            <div style={{fontSize:10,color:"#555",lineHeight:1.7}}>
+              console.groq.com<br/>→ API Keys → Create<br/>
+              <span style={{color:"#4ade80"}}>Free in India ✓</span><br/>
+              <span style={{color:"#333"}}>Key: gsk_...</span>
             </div>
           </div>
-          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 12px"}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:4}}>Claude (Paid)</div>
-            <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
-              console.anthropic.com<br/>→ API Keys → Create Key<br/>
-              <span style={{color:"#fbbf24"}}>~₹0.80 per import</span>
+          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 10px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#fbbf24",marginBottom:4}}>Gemini</div>
+            <div style={{fontSize:10,color:"#555",lineHeight:1.7}}>
+              aistudio.google.com<br/>→ Get API Key<br/>
+              <span style={{color:"#fbbf24"}}>Needs billing</span><br/>
+              <span style={{color:"#333"}}>Key: AIzaSy...</span>
+            </div>
+          </div>
+          <div style={{background:"#070710",border:"1px solid #1a1a2e",borderRadius:8,padding:"10px 10px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:4}}>Claude</div>
+            <div style={{fontSize:10,color:"#555",lineHeight:1.7}}>
+              console.anthropic.com<br/>→ API Keys<br/>
+              <span style={{color:"#fbbf24"}}>~₹0.80/import</span><br/>
+              <span style={{color:"#333"}}>Key: sk-ant-...</span>
             </div>
           </div>
         </div>
         <div style={{fontSize:11,color:"#555",marginBottom:10}}>
-          Paste either key below — the app detects which one automatically.
+          Paste any key below — auto-detected. <span style={{color:"#4ade80",fontWeight:600}}>Groq recommended for India (free, no billing).</span>
         </div>
         <div style={{display:"flex",gap:10}}>
           <div style={{flex:1,position:"relative"}}>
             <input className="input" type={showKey?"text":"password"} value={keyInput} onChange={e=>setKeyInput(e.target.value)}
-              placeholder="AIzaSy... (Gemini) or sk-ant-... (Claude)"/>
+              placeholder="gsk_... (Groq) or AIzaSy... (Gemini) or sk-ant-... (Claude)"/>
             <span onClick={()=>setShowKey(!showKey)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#555",fontSize:14}}>{showKey?"🙈":"👁"}</span>
           </div>
           <button className="btn btn-primary" onClick={()=>{saveApiKey(keyInput);notify("✓ API key saved");}}>Save</button>
         </div>
         {apiKey&&(
           <div style={{fontSize:11,color:"#4ade80",marginTop:8}}>
-            ✓ {apiKey.trim().startsWith("AIzaSy")?"Gemini":"Claude"} key active — Smart Import ready
+            ✓ {apiKey.trim().startsWith("gsk_")?"Groq":apiKey.trim().startsWith("AIzaSy")?"Gemini":"Claude"} key active — Smart Import ready
           </div>
         )}
       </div>
