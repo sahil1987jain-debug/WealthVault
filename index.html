@@ -597,108 +597,83 @@ const CAT_COLORS = {
 };
 
 const DEFAULT_DATA = {
-  profile:{name:"Rajesh Kumar",dob:"1980-05-15",pan:"ABCDE1234F",aadhar:"XXXX-XXXX-1234",email:"rajesh@email.com",phone:"+91 98765 43210",
-    nominees:[{name:"Priya Kumar",relation:"Spouse",phone:"+91 98765 00001",email:"priya@email.com"},{name:"Arjun Kumar",relation:"Son",phone:"+91 98765 00002",email:"arjun@email.com"}]},
+  profile:{name:"Arjun Sharma",dob:"1985-07-22",pan:"ABCPS1234K",aadhar:"XXXX-XXXX-7890",email:"arjun.sharma@email.com",phone:"+91 98100 00000",
+    nominees:[{name:"Kavya Sharma",relation:"Spouse",phone:"+91 98100 00001",email:"kavya.sharma@email.com"},{name:"Riya Sharma",relation:"Daughter",phone:"",email:""}]},
   assets:[
     // Real Estate
-    {id:101,category:"Real Estate",name:"Primary Home – Bandra Mumbai",value:15000000,propType:"Residential – Flat / Apartment",address:"Flat 7B, Sea View Towers, Bandra West, Mumbai 400050",area:1250,buyPrice:8500000,buyDate:"2010-03-15",regNo:"MH-MUM-2010-12345",loanLinked:"Yes",rental:0,details:"3BHK, sea-facing, society: Sea View CHS",date:"2010-03-15"},
-    // Stocks — individual holdings with NSE tickers
-    {id:201,category:"Stocks",name:"Reliance Industries",ticker:"RELIANCE",exchange:"NSE",broker:"Zerodha",qty:40,buyPrice:2320,value:114000,buyDate:"2022-06-10",isin:"INE002A01018",details:"Energy & Telecom conglomerate",date:"2024-01-01"},
-    {id:202,category:"Stocks",name:"HDFC Bank",ticker:"HDFCBANK",exchange:"NSE",broker:"Zerodha",qty:60,buyPrice:1480,value:95400,buyDate:"2021-11-20",isin:"INE040A01034",details:"Largest private sector bank",date:"2024-01-01"},
-    {id:203,category:"Stocks",name:"Infosys",ticker:"INFY",exchange:"NSE",broker:"Zerodha",qty:50,buyPrice:1420,value:76500,buyDate:"2021-09-05",isin:"INE009A01021",details:"IT services major",date:"2024-01-01"},
-    {id:204,category:"Stocks",name:"Tata Consultancy Services",ticker:"TCS",exchange:"NSE",broker:"Zerodha",qty:15,buyPrice:3250,value:58500,buyDate:"2022-03-15",isin:"INE467B01029",details:"IT services & consulting",date:"2024-01-01"},
-    {id:205,category:"Stocks",name:"ITC Limited",ticker:"ITC",exchange:"NSE",broker:"Zerodha",qty:200,buyPrice:320,value:88000,buyDate:"2021-08-12",isin:"INE154A01025",details:"FMCG, hotels, agribusiness",date:"2024-01-01"},
-    {id:206,category:"Stocks",name:"Larsen & Toubro",ticker:"LT",exchange:"NSE",broker:"Zerodha",qty:20,buyPrice:2800,value:68000,buyDate:"2022-07-22",isin:"INE018A01030",details:"Infrastructure & engineering",date:"2024-01-01"},
-    {id:207,category:"Stocks",name:"Bajaj Finance",ticker:"BAJFINANCE",exchange:"NSE",broker:"Zerodha",qty:10,buyPrice:6800,value:75000,buyDate:"2022-01-18",isin:"INE296A01024",details:"Consumer finance NBFC",date:"2024-01-01"},
-    {id:208,category:"Stocks",name:"Asian Paints",ticker:"ASIANPAINT",exchange:"NSE",broker:"Zerodha",qty:25,buyPrice:3100,value:71250,buyDate:"2021-12-05",isin:"INE021A01026",details:"Paints & coatings leader",date:"2024-01-01"},
-    // ── User's actual portfolio ──────────────────────────────────────────────
-    {id:301,category:"Stocks",name:"Infibeam Avenues Ltd",ticker:"INFIBEAM",exchange:"NSE",broker:"Zerodha",qty:2000,buyPrice:18.50,value:37000,buyDate:"2022-03-10",isin:"INE483S01020",details:"Payments & e-commerce infra",date:"2024-01-01"},
-    {id:302,category:"Stocks",name:"Axis Silver ETF",ticker:"AXSILVERETF",exchange:"NSE",broker:"Zerodha",qty:150,buyPrice:68.00,value:10200,buyDate:"2023-01-15",isin:"INF846K011K1",details:"Silver ETF — NSE",date:"2024-01-01"},
-    {id:303,category:"Stocks",name:"Bajaj Housing Finance Ltd",ticker:"BAJAJHFL",exchange:"NSE",broker:"Zerodha",qty:500,buyPrice:112.00,value:56000,buyDate:"2023-09-20",isin:"INE377Y01014",details:"Housing finance NBFC",date:"2024-01-01"},
-    {id:304,category:"Stocks",name:"Coal India Ltd",ticker:"COALINDIA",exchange:"NSE",broker:"Groww",qty:200,buyPrice:320.00,value:64000,buyDate:"2022-08-05",isin:"INE522F01014",details:"State-owned coal mining",date:"2024-01-01"},
-    {id:305,category:"Stocks",name:"DiGiSPICE Technologies Ltd",ticker:"DIGISPICE",exchange:"NSE",broker:"Zerodha",qty:3000,buyPrice:22.00,value:66000,buyDate:"2021-11-12",isin:"INE927C01020",details:"Telecom & digital services",date:"2024-01-01"},
-    {id:306,category:"Stocks",name:"FCS Software Solutions Ltd",ticker:"FCSSOFT",exchange:"NSE",broker:"Zerodha",qty:5000,buyPrice:8.50,value:42500,buyDate:"2022-01-20",isin:"INE512B01022",details:"IT services — small cap",date:"2024-01-01"},
-    {id:307,category:"Stocks",name:"Future Retail Ltd",ticker:"FRETAIL",exchange:"NSE",broker:"Zerodha",qty:1000,buyPrice:45.00,value:45000,buyDate:"2021-06-15",isin:"INE752P01024",details:"Retail chain — under resolution",date:"2024-01-01"},
-    {id:308,category:"Stocks",name:"Hindustan Construction Co.",ticker:"HCC",exchange:"NSE",broker:"Groww",qty:2500,buyPrice:28.00,value:70000,buyDate:"2022-05-18",isin:"INE549A01026",details:"Infrastructure & construction",date:"2024-01-01"},
-    {id:309,category:"Stocks",name:"ICICI Prudential Silver ETF",ticker:"SILVERIETF",exchange:"NSE",broker:"Zerodha",qty:200,buyPrice:72.00,value:14400,buyDate:"2023-02-10",isin:"INF109KC1Y56",details:"Silver ETF — NSE",date:"2024-01-01"},
-    {id:310,category:"Stocks",name:"ICICI Prudential Gold ETF",ticker:"GOLDIETF",exchange:"NSE",broker:"Zerodha",qty:100,buyPrice:520.00,value:52000,buyDate:"2022-10-05",isin:"INF109KC1NT3",details:"Gold ETF — NSE",date:"2024-01-01"},
-    {id:311,category:"Stocks",name:"Jio Financial Services Ltd",ticker:"JIOFIN",exchange:"NSE",broker:"Zerodha",qty:300,buyPrice:220.00,value:66000,buyDate:"2023-08-21",isin:"INE758E01017",details:"Reliance demerger — fintech",date:"2024-01-01"},
-    {id:312,category:"Stocks",name:"Jyoti Structures Ltd",ticker:"JYOTISTRUC",exchange:"NSE",broker:"Zerodha",qty:4000,buyPrice:14.00,value:56000,buyDate:"2021-09-08",isin:"INE197A01024",details:"Power transmission infra",date:"2024-01-01"},
-    {id:313,category:"Stocks",name:"Kotak Gold ETF",ticker:"GOLD1",exchange:"NSE",broker:"Zerodha",qty:80,buyPrice:480.00,value:38400,buyDate:"2022-07-14",isin:"INF174KA1HJ8",details:"Gold ETF — NSE",date:"2024-01-01"},
-    {id:314,category:"Stocks",name:"NTPC Ltd",ticker:"NTPC",exchange:"NSE",broker:"Groww",qty:400,buyPrice:180.00,value:72000,buyDate:"2022-04-22",isin:"INE733E01010",details:"Largest power utility — PSU",date:"2024-01-01"},
-    {id:315,category:"Stocks",name:"Oil & Natural Gas Corp.",ticker:"ONGC",exchange:"NSE",broker:"Groww",qty:300,buyPrice:155.00,value:46500,buyDate:"2022-06-30",isin:"INE213A01029",details:"Oil & gas exploration — PSU",date:"2024-01-01"},
-    {id:316,category:"Stocks",name:"Religare Enterprises Ltd",ticker:"RELIGARE",exchange:"NSE",broker:"Zerodha",qty:800,buyPrice:95.00,value:76000,buyDate:"2023-03-17",isin:"INE621H01010",details:"Financial services group",date:"2024-01-01"},
-    {id:317,category:"Stocks",name:"SEPC Ltd",ticker:"SEPC",exchange:"NSE",broker:"Zerodha",qty:3000,buyPrice:18.00,value:54000,buyDate:"2022-02-25",isin:"INE964H01014",details:"EPC & infrastructure",date:"2024-01-01"},
-    {id:318,category:"Stocks",name:"SJVN Ltd",ticker:"SJVN",exchange:"NSE",broker:"Groww",qty:1000,buyPrice:58.00,value:58000,buyDate:"2022-11-10",isin:"INE002L01015",details:"Hydro & renewable power PSU",date:"2024-01-01"},
-    {id:319,category:"Stocks",name:"Suryoday Small Finance Bank",ticker:"SURYODAY",exchange:"NSE",broker:"Zerodha",qty:600,buyPrice:138.00,value:82800,buyDate:"2023-01-05",isin:"INE428Q01011",details:"Small finance bank — microfinance",date:"2024-01-01"},
-    {id:320,category:"Stocks",name:"Hi-Tech Gears Ltd",ticker:"HITECHGEAR",exchange:"NSE",broker:"Zerodha",qty:250,buyPrice:420.00,value:105000,buyDate:"2022-09-15",isin:"INE127B01011",details:"Auto components manufacturer",date:"2024-01-01"},
-    {id:321,category:"Stocks",name:"Vodafone Idea Ltd",ticker:"IDEA",exchange:"NSE",broker:"Zerodha",qty:10000,buyPrice:11.50,value:115000,buyDate:"2021-07-20",isin:"INE669E01016",details:"Telecom operator — turnaround bet",date:"2024-01-01"},
-    {id:322,category:"Stocks",name:"Remi Metals Gujarat Ltd",ticker:"500365",exchange:"BSE",broker:"Zerodha",qty:500,buyPrice:185.00,value:92500,buyDate:"2022-12-08",isin:"INE731F01037",details:"BSE only — ticker 500365.BO on Yahoo",date:"2024-01-01"},
-    {id:323,category:"Stocks",name:"Yes Bank Ltd",ticker:"YESBANK",exchange:"NSE",broker:"Groww",qty:5000,buyPrice:16.50,value:82500,buyDate:"2021-10-14",isin:"INE528G01035",details:"Private sector bank — recovery play",date:"2024-01-01"},
-    // Mutual Funds — individual schemes with schemeCode for MFAPI
-    {id:301,category:"Mutual Funds",name:"Parag Parikh Flexi Cap Fund – Direct Growth",broker:"Kuvera",amc:"PPFAS Mutual Fund",fundCat:"Equity – Flexi Cap",folio:"1234567890",units:1245.678,nav:68.45,invested:65000,sipAmt:5000,buyDate:"2020-06-01",schemeCode:"122639",value:85222,details:"Long-term wealth creation SIP",date:"2024-01-01"},
-    {id:302,category:"Mutual Funds",name:"Mirae Asset Large Cap Fund – Direct Growth",broker:"Groww",amc:"Mirae Asset",fundCat:"Equity – Large Cap",folio:"9876543210",units:987.432,nav:102.30,invested:75000,sipAmt:5000,buyDate:"2019-10-15",schemeCode:"118989",value:101054,details:"Core large-cap holding",date:"2024-01-01"},
-    {id:303,category:"Mutual Funds",name:"SBI Small Cap Fund – Direct Growth",broker:"Zerodha Coin",amc:"SBI Mutual Fund",fundCat:"Equity – Small Cap",folio:"1122334455",units:654.321,nav:145.60,invested:60000,sipAmt:3000,buyDate:"2021-03-01",schemeCode:"125497",value:95270,details:"High growth small cap exposure",date:"2024-01-01"},
-    {id:304,category:"Mutual Funds",name:"HDFC Mid-Cap Opportunities Fund – Direct Growth",broker:"Kuvera",amc:"HDFC Mutual Fund",fundCat:"Equity – Mid Cap",folio:"5566778899",units:523.100,nav:128.75,invested:45000,sipAmt:0,buyDate:"2022-01-10",schemeCode:"120505",value:67349,details:"Lumpsum mid-cap investment",date:"2024-01-01"},
-    {id:305,category:"Mutual Funds",name:"ICICI Pru Nifty 50 Index Fund – Direct Growth",broker:"ET Money",amc:"ICICI Prudential",fundCat:"Index Fund",folio:"6677889900",units:1876.543,nav:28.90,invested:40000,sipAmt:2000,buyDate:"2021-06-01",schemeCode:"120586",value:54231,details:"Low-cost passive Nifty 50 index",date:"2024-01-01"},
+    {id:101,memberId:"self",category:"Real Estate",name:"Primary Home – Powai Mumbai",value:12500000,propType:"Residential – Flat / Apartment",address:"Flat 4A, Emerald Heights, Powai, Mumbai 400076",area:1100,buyPrice:7200000,buyDate:"2013-04-10",regNo:"MH-MUM-2013-45678",loanLinked:"Yes",rental:0,details:"2BHK, lake view, society: Emerald Heights CHS",date:"2013-04-10"},
+    // Stocks
+    {id:201,memberId:"self",category:"Stocks",name:"Reliance Industries",ticker:"RELIANCE",exchange:"NSE",broker:"Upstox",qty:25,buyPrice:2100,value:67500,buyDate:"2022-01-15",isin:"INE002A01018",details:"Energy, telecom & retail",date:"2024-01-01"},
+    {id:202,memberId:"self",category:"Stocks",name:"HDFC Bank",ticker:"HDFCBANK",exchange:"NSE",broker:"Upstox",qty:40,buyPrice:1550,value:64000,buyDate:"2021-09-20",isin:"INE040A01034",details:"Largest private bank",date:"2024-01-01"},
+    {id:203,memberId:"self",category:"Stocks",name:"Infosys",ticker:"INFY",exchange:"NSE",broker:"Upstox",qty:35,buyPrice:1380,value:54250,buyDate:"2022-03-10",isin:"INE009A01021",details:"IT services",date:"2024-01-01"},
+    {id:204,memberId:"self",category:"Stocks",name:"NTPC Ltd",ticker:"NTPC",exchange:"NSE",broker:"Upstox",qty:300,buyPrice:175,value:57000,buyDate:"2022-06-15",isin:"INE733E01010",details:"Power utility PSU",date:"2024-01-01"},
+    {id:205,memberId:"self",category:"Stocks",name:"ITC Limited",ticker:"ITC",exchange:"NSE",broker:"Upstox",qty:150,buyPrice:310,value:67500,buyDate:"2021-11-05",isin:"INE154A01025",details:"FMCG & hotels",date:"2024-01-01"},
+    {id:206,memberId:"self",category:"Stocks",name:"SBI (State Bank of India)",ticker:"SBIN",exchange:"NSE",broker:"Upstox",qty:100,buyPrice:520,value:62000,buyDate:"2022-05-20",isin:"INE062A01020",details:"Largest public sector bank",date:"2024-01-01"},
+    {id:207,memberId:"self",category:"Stocks",name:"Tata Motors",ticker:"TATAMOTORS",exchange:"NSE",broker:"Upstox",qty:80,buyPrice:480,value:52800,buyDate:"2022-09-12",isin:"INE155A01022",details:"Auto – JLR & domestic",date:"2024-01-01"},
+    // Mutual Funds
+    {id:301,memberId:"self",category:"Mutual Funds",name:"Parag Parikh Flexi Cap Fund – Direct Growth",broker:"Kuvera",amc:"PPFAS",fundCat:"Equity – Flexi Cap",folio:"1234500001",units:980.450,nav:71.20,invested:55000,sipAmt:5000,buyDate:"2020-08-01",schemeCode:"122639",value:69808,details:"Core flexi-cap SIP",date:"2024-01-01"},
+    {id:302,memberId:"self",category:"Mutual Funds",name:"Mirae Asset Large Cap Fund – Direct Growth",broker:"Kuvera",amc:"Mirae Asset",fundCat:"Equity – Large Cap",folio:"1234500002",units:720.300,nav:105.40,invested:60000,sipAmt:5000,buyDate:"2019-12-01",schemeCode:"118989",value:75919,details:"Large cap core holding",date:"2024-01-01"},
+    {id:303,memberId:"self",category:"Mutual Funds",name:"SBI Small Cap Fund – Direct Growth",broker:"Groww",amc:"SBI MF",fundCat:"Equity – Small Cap",folio:"1234500003",units:410.120,nav:148.75,invested:45000,sipAmt:3000,buyDate:"2021-04-01",schemeCode:"125497",value:61012,details:"Small cap growth SIP",date:"2024-01-01"},
+    {id:304,memberId:"self",category:"Mutual Funds",name:"ICICI Pru Nifty 50 Index Fund – Direct Growth",broker:"Groww",amc:"ICICI Prudential",fundCat:"Index Fund",folio:"1234500004",units:1540.200,nav:29.80,invested:35000,sipAmt:2000,buyDate:"2021-07-01",schemeCode:"120586",value:45898,details:"Passive Nifty 50 index",date:"2024-01-01"},
     // Fixed Deposits
-    {id:401,category:"Fixed Deposits",name:"SBI FD – Retirement Corpus",bank:"SBI",fdNo:"SBIN000123456",principal:300000,intRate:7.1,tenure:"3 Years",buyDate:"2023-06-01",matDate:"2026-06-01",value:373893,intType:"Cumulative (at maturity)",autoRenew:"No",details:"Linked to SBI savings account",date:"2023-06-01"},
-    {id:402,category:"Fixed Deposits",name:"HDFC Bank FD – Emergency Fund",bank:"HDFC Bank",fdNo:"HDFC009876543",principal:200000,intRate:7.25,tenure:"2 Years",buyDate:"2024-01-15",matDate:"2026-01-15",value:230610,intType:"Cumulative (at maturity)",autoRenew:"Yes",details:"Emergency fund, do not break",date:"2024-01-15"},
-    // Gold
-    {id:501,category:"Stocks",name:"Sovereign Gold Bond 2023-24 Series I",ticker:"SGBSEP31",exchange:"NSE",broker:"Zerodha",qty:50,buyPrice:5926,buyDate:"2023-09-18",matDate:"2031-09-18",value:296300,isin:"IN0020230136",details:"SGB – Interest 2.5% p.a. semi-annually. Matures Sep 2031.",date:"2023-09-18"},
-    {id:502,category:"Stocks",name:"Physical Gold Jewellery",ticker:"",exchange:"",broker:"",qty:120,buyPrice:4800,buyDate:"2015-01-01",value:353880,details:"Physical gold jewellery – 22K (91.6%), Bank locker – SBI Bandra",date:"2015-01-01"},
+    {id:401,memberId:"self",category:"Fixed Deposits",name:"HDFC Bank FD – Emergency Fund",bank:"HDFC Bank",fdNo:"HDFC001234567",principal:200000,intRate:7.25,tenure:"2 Years",buyDate:"2024-02-01",matDate:"2026-02-01",value:230610,intType:"Cumulative (at maturity)",autoRenew:"Yes",details:"Emergency corpus — do not break",date:"2024-02-01"},
+    {id:402,memberId:"self",category:"Fixed Deposits",name:"SBI FD – Annual Bonus Parked",bank:"SBI",fdNo:"SBIN007654321",principal:150000,intRate:7.10,tenure:"1 Year",buyDate:"2024-04-01",matDate:"2025-04-01",value:160650,intType:"Cumulative (at maturity)",autoRenew:"No",details:"From annual bonus 2024",date:"2024-04-01"},
     // EPF/PPF
-    {id:601,category:"EPF/PPF",name:"EPF – Tata Consultancy Services",scheme:"EPF (Employee Provident Fund)",acNo:"MAHBA0001234567",employer:"Tata Consultancy Services Ltd",empContrib:1800,empRContrib:1800,intRate:8.15,nominee:"Priya Kumar",value:820000,details:"UAN: 100123456789, active contributions",date:"2024-01-01"},
-    {id:602,category:"EPF/PPF",name:"PPF Account – SBI Bandra Branch",scheme:"PPF (Public Provident Fund)",acNo:"SB-PPF-12345678",employer:"SBI Bandra West",empContrib:12500,intRate:7.1,nominee:"Rajesh Kumar (self)",matDate:"2029-04-01",value:380000,details:"Annual contribution ₹1.5L, tax-free",date:"2024-01-01"},
+    {id:501,memberId:"self",category:"EPF/PPF",name:"EPF – Infosys BPM",scheme:"EPF",acNo:"MHBAN0001234567",employer:"Infosys BPM Ltd",empContrib:2100,empRContrib:2100,intRate:8.15,nominee:"Kavya Sharma",value:740000,details:"UAN: 100987654321",date:"2024-01-01"},
+    {id:502,memberId:"self",category:"EPF/PPF",name:"PPF Account – HDFC Branch",scheme:"PPF",acNo:"HDFC-PPF-9876543",employer:"HDFC Powai",empContrib:12500,intRate:7.1,nominee:"Arjun Sharma",matDate:"2030-03-31",value:320000,details:"Annual contribution ₹1.5L, tax-free",date:"2024-01-01"},
     // Bank Savings
-    {id:701,category:"Bank Savings",name:"HDFC Primary Salary Account",bank:"HDFC Bank",acType:"Salary",acNo:"XXXX1234",ifsc:"HDFC0001234",intRate:3.5,nominee:"Priya Kumar",value:285000,details:"Salary credit on 1st of month",date:"2024-01-01"},
-    {id:702,category:"Bank Savings",name:"SBI Savings Account",bank:"SBI",acType:"Savings",acNo:"XXXX5678",ifsc:"SBIN0001234",intRate:2.7,nominee:"Priya Kumar",value:135000,details:"PPF linked account",date:"2024-01-01"},
+    {id:601,memberId:"self",category:"Bank Savings",name:"HDFC Salary Account",bank:"HDFC Bank",acType:"Salary",acNo:"XXXX4321",ifsc:"HDFC0000001",intRate:3.5,nominee:"Kavya Sharma",value:245000,details:"Salary credit 1st of month",date:"2024-01-01"},
+    {id:602,memberId:"self",category:"Bank Savings",name:"ICICI Savings Account",bank:"ICICI Bank",acType:"Savings",acNo:"XXXX8765",ifsc:"ICIC0000001",intRate:3.0,nominee:"Kavya Sharma",value:85000,details:"Secondary account",date:"2024-01-01"},
+    // Gold
+    {id:701,memberId:"self",category:"Gold",name:"Physical Gold – 22K Jewellery",qty:80,buyPrice:4500,value:305600,details:"Family jewellery – bank locker HDFC",date:"2018-01-01"},
+    {id:702,memberId:"self",category:"Gold",name:"Sovereign Gold Bond 2022-23 Series III",ticker:"SGBMAR28",exchange:"NSE",broker:"Upstox",qty:20,buyPrice:5200,value:125600,matDate:"2030-03-08",details:"SGB – 2.5% interest p.a.",date:"2022-03-08"},
   ],
   liabilities:[
-    {id:1,category:"Home Loan",name:"HDFC Home Loan - Bandra Property",value:6200000,details:"EMI: ₹52,000/mo, Rate: 8.5%, Due: 2035",date:"2010-03-15"},
-    {id:2,category:"Car Loan",name:"ICICI Car Loan - Honda City",value:380000,details:"EMI: ₹14,500/mo, Rate: 9.2%, Due: 2026-08",date:"2022-08-01"},
-    {id:3,category:"Credit Cards",name:"HDFC / AMEX Cards Outstanding",value:45000,details:"HDFC Regalia: 30K, Amex: 15K",date:"2024-01-01"},
+    {id:1,memberId:"self",category:"Home Loan",name:"HDFC Home Loan – Powai Property",value:5800000,origAmt:8000000,emi:62000,intRate:8.75,startDate:"2013-04-01",endDate:"2033-04-01",details:"20-year tenure, 9 years remaining",date:"2013-04-01"},
+    {id:2,memberId:"self",category:"Car Loan",name:"ICICI Car Loan – Tata Nexon EV",value:520000,origAmt:800000,emi:17500,intRate:9.0,startDate:"2023-06-01",endDate:"2027-06-01",details:"4-year tenure, 3 years remaining",date:"2023-06-01"},
+    {id:3,memberId:"self",category:"Credit Cards",name:"HDFC Regalia Credit Card",value:38000,origAmt:38000,emi:0,intRate:42,details:"Pay before due date to avoid interest",date:"2024-01-01"},
   ],
   insurance:[
-    {id:1,type:"Term Life",name:"LIC Tech Term - 1Cr Cover",premium:18500,frequency:"Annual",cover:10000000,maturity:"2050-05-15",nominee:"Priya Kumar",policyNo:"LIC-TT-12345",status:"Active"},
-    {id:2,type:"Health",name:"Star Health Family Floater - 25L",premium:32000,frequency:"Annual",cover:2500000,maturity:"2025-04-01",nominee:"Family",policyNo:"STAR-HF-56789",status:"Active"},
-    {id:3,type:"Vehicle",name:"New India - Honda City Comprehensive",premium:14200,frequency:"Annual",cover:800000,maturity:"2025-02-28",nominee:"Self",policyNo:"NIA-VC-99012",status:"Active"},
+    {id:1,memberId:"self",type:"Term Life",name:"HDFC Life Click2Protect – 1 Cr",premium:15200,frequency:"Annual",cover:10000000,maturity:"2055-07-22",nominee:"Kavya Sharma",policyNo:"HDFC-TP-00112233",status:"Active",details:"Pure term, online policy"},
+    {id:2,memberId:"self",type:"Health",name:"Star Health Family Floater – 20L",premium:28500,frequency:"Annual",cover:2000000,maturity:"2025-06-01",nominee:"Family",policyNo:"STAR-HF-44556677",status:"Active",details:"Family of 3, cashless 7000+ hospitals"},
+    {id:3,memberId:"self",type:"Vehicle",name:"Bajaj Allianz – Tata Nexon EV",premium:12800,frequency:"Annual",cover:950000,maturity:"2025-06-15",nominee:"Self",policyNo:"BAJA-VC-99887766",status:"Active",details:"Comprehensive, zero dep add-on"},
+    {id:4,memberId:"self",type:"Life (ULIP)",name:"LIC Jeevan Anand – Endowment",premium:48000,frequency:"Annual",cover:1000000,maturity:"2035-08-01",nominee:"Kavya Sharma",policyNo:"LIC-JA-11223344",status:"Active",details:"Traditional plan, bonus accumulating"},
   ],
   income:[
-    {id:1,source:"Salary",name:"TCS - Senior Manager",amount:180000,frequency:"Monthly",taxable:true},
-    {id:2,source:"Rental",name:"2BHK Flat Rent - Andheri",amount:28000,frequency:"Monthly",taxable:true},
-    {id:3,source:"Dividends",name:"Equity Dividends",amount:5000,frequency:"Monthly",taxable:false},
-    {id:4,source:"Interest",name:"FD Interest Income",amount:5250,frequency:"Monthly",taxable:true},
+    {id:1,memberId:"self",source:"Salary",name:"Infosys BPM – Senior Analyst",amount:145000,frequency:"Monthly",taxable:true,date:"2024-01-01"},
+    {id:2,memberId:"self",source:"Rental",name:"1BHK Flat – Thane West",amount:18000,frequency:"Monthly",taxable:true,date:"2024-01-01"},
+    {id:3,memberId:"self",source:"Dividends",name:"Stock Dividends",amount:3500,frequency:"Monthly",taxable:false,date:"2024-01-01"},
+    {id:4,memberId:"self",source:"Interest",name:"FD & Savings Interest",amount:3200,frequency:"Monthly",taxable:true,date:"2024-01-01"},
   ],
   expenses:[
-    {id:1,category:"EMI",name:"Home Loan EMI",amount:52000,date:"2024-01-05",type:"Fixed"},
-    {id:2,category:"EMI",name:"Car Loan EMI",amount:14500,date:"2024-01-10",type:"Fixed"},
-    {id:3,category:"Groceries",name:"Big Basket + Local Market",amount:12000,date:"2024-01-20",type:"Variable"},
-    {id:4,category:"Utilities",name:"Electricity + Gas + Internet",amount:4500,date:"2024-01-22",type:"Fixed"},
-    {id:5,category:"Dining",name:"Restaurants & Delivery",amount:8000,date:"2024-01-25",type:"Variable"},
-    {id:6,category:"SIP",name:"Monthly SIP Investments",amount:25000,date:"2024-01-05",type:"Fixed"},
+    {id:1,memberId:"self",category:"EMI",name:"Home Loan EMI – HDFC",amount:62000,date:"2024-01-05",type:"Fixed"},
+    {id:2,memberId:"self",category:"EMI",name:"Car Loan EMI – ICICI",amount:17500,date:"2024-01-08",type:"Fixed"},
+    {id:3,memberId:"self",category:"SIP",name:"Monthly SIP – 3 Funds",amount:20000,date:"2024-01-01",type:"Fixed"},
+    {id:4,memberId:"self",category:"Groceries",name:"BigBasket + Local",amount:9500,date:"2024-01-18",type:"Variable"},
+    {id:5,memberId:"self",category:"Utilities",name:"Electricity + JIO + Piped Gas",amount:4200,date:"2024-01-20",type:"Fixed"},
+    {id:6,memberId:"self",category:"Dining",name:"Zomato + Restaurants",amount:6500,date:"2024-01-25",type:"Variable"},
+    {id:7,memberId:"self",category:"Transport",name:"Fuel + Uber",amount:5000,date:"2024-01-22",type:"Variable"},
+    {id:8,memberId:"self",category:"Insurance Premium",name:"Insurance Premiums (monthly)",amount:8625,date:"2024-01-01",type:"Fixed"},
+    {id:9,memberId:"self",category:"Medical",name:"Pharmacy + Doctor visits",amount:1800,date:"2024-01-28",type:"Variable"},
+    {id:10,memberId:"self",category:"Education",name:"Riya's School Fees",amount:7500,date:"2024-01-10",type:"Fixed"},
   ],
   imports:[],
   budgets:{
-    "EMI":0,"Groceries":6000,"Utilities":5000,"Insurance Premium":0,
-    "SIP/Investment":0,"Medical":3000,"Dining":8000,"Transport":4000,
-    "Shopping":5000,"Entertainment":3000,"Education":0,"Travel":5000,"Other Expense":3000
+    "EMI":80000,"Groceries":10000,"Utilities":5000,"Insurance Premium":9000,
+    "SIP/Investment":20000,"Medical":3000,"Dining":7000,"Transport":5000,
+    "Shopping":5000,"Entertainment":3000,"Education":8000,"Travel":5000,"Other Expense":3000
   },
   family:[
-    {id:"self",name:"Me",relation:"Self",color:"#a78bfa",dob:"",pan:"",email:"",phone:""}
+    {id:"self",name:"Arjun",relation:"Self",color:"#a78bfa",dob:"1985-07-22",pan:"",email:"arjun.sharma@email.com",phone:"+91 98100 00000"},
+    {id:"spouse",name:"Kavya",relation:"Spouse",color:"#f472b6",dob:"1987-03-14",pan:"",email:"kavya.sharma@email.com",phone:"+91 98100 00001"},
+    {id:"daughter",name:"Riya",relation:"Daughter",color:"#34d399",dob:"2015-11-05",pan:"",email:"",phone:""},
   ],
   notifications:{
-    insuranceRenewal:  true,
-    emiDue:            true,
-    fdMaturity:        true,
-    budgetOverspend:   true,
-    renewalDays:       30,
-    emiDueDays:        5,
+    insuranceRenewal:true, emiDue:true, fdMaturity:true, budgetOverspend:true,
+    renewalDays:30, emiDueDays:5,
   },
   docs: [],
-  docCategories: [
-    "Identity","Property","Vehicle","Finance","Insurance","Medical","Education","Legal","Other"
-  ],
+  docCategories: ["Identity","Property","Vehicle","Finance","Insurance","Medical","Education","Legal","Other"],
 };
 
 const NAV_ITEMS = [
@@ -9635,19 +9610,118 @@ function ProfileTab({data,setData,notify,apiKey,saveApiKey,lockApp,onChangePin,a
           </div>
           <div className="stat-card" style={{marginTop:16}}>
             <div className="section-title">Data & Privacy</div>
-            <div style={{fontSize:12,color:"#666",lineHeight:1.8}}>
-              <div>💾 All data saved in browser (localStorage)</div>
-              <div>🔒 Nothing uploaded to any server</div>
-              <div>🤖 API key sent only to Anthropic for AI parsing</div>
-              <div>📄 Documents processed by Claude AI, not stored</div>
-              <div>🖨 Use Legacy Vault → Print for family PDF</div>
+            <div style={{fontSize:12,color:"#666",lineHeight:1.8,marginBottom:14}}>
+              <div>💾 Financial data saved in browser + Firestore (if signed in)</div>
+              <div>🔒 Documents stored in browser IndexedDB only</div>
+              <div>🤖 AI key sent only to Claude/Groq/Gemini for parsing</div>
+              <div>🖨 Use Legacy Vault → Print for offline backup</div>
             </div>
-            <button className="btn btn-danger" style={{marginTop:14,fontSize:12,width:"100%"}} onClick={()=>{if(window.confirm("Reset ALL data? This cannot be undone.")){localStorage.removeItem(STORAGE_KEY);window.location.reload();}}}>
-              ⚠ Reset All Data
-            </button>
+
+            {/* Reset to Demo Data */}
+            <DataResetPanel notify={notify} setData={setData} authUser={authUser}/>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── DATA RESET PANEL ─────────────────────────────────────────────────────────
+function DataResetPanel({notify, setData, authUser}){
+  const [busy,    setBusy]    = useState(false);
+  const [confirm, setConfirm] = useState(""); // "demo" | "wipe"
+
+  const doReset = async(mode) => {
+    setBusy(true);
+    try{
+      // 1. Delete from Firestore if signed in
+      if(FB.enabled && authUser?.uid){
+        try{
+          await FB.db.collection("users").doc(authUser.uid).delete();
+          notify("✓ Cloud data deleted");
+        }catch(e){ console.warn("Firestore delete failed:", e.message); }
+      }
+      // 2. Clear localStorage
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem("wv_pin_hash");
+      localStorage.removeItem("wv_pin_salt");
+      localStorage.removeItem("wv_pin_otp");
+      localStorage.removeItem("wv_pin_attempts");
+      localStorage.removeItem("wv_pin_lockout");
+      // 3. For demo mode: set DEFAULT_DATA immediately so it's ready
+      if(mode==="demo"){
+        localStorage.removeItem(STORAGE_KEY); // ensure clean
+        notify("✓ Reset to demo data — reloading…");
+      } else {
+        notify("✓ All data wiped — reloading…");
+      }
+      setTimeout(()=>window.location.reload(), 800);
+    }catch(e){
+      notify("Reset failed: "+e.message,"error");
+      setBusy(false);
+    }
+  };
+
+  if(confirm==="demo") return(
+    <div style={{background:"#0a1020",border:"1px solid #1e3a5f",borderRadius:10,padding:"14px"}}>
+      <div style={{fontSize:13,fontWeight:700,color:"#93c5fd",marginBottom:8}}>🔄 Reset to Demo Data</div>
+      <div style={{fontSize:12,color:"#888",marginBottom:14,lineHeight:1.7}}>
+        This will:<br/>
+        ✓ Delete your data from Firestore cloud<br/>
+        ✓ Clear browser localStorage<br/>
+        ✓ Load demo data (Arjun Sharma family)<br/>
+        <span style={{color:"#f87171"}}>✗ Your real financial data will be deleted from this app</span><br/>
+        <span style={{color:"#fbbf24",fontSize:11}}>Take a backup first if needed (Reports → Export)</span>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>doReset("demo")} disabled={busy}
+          style={{flex:1,padding:"10px",borderRadius:9,background:"linear-gradient(135deg,#7c3aed,#2563eb)",
+            border:"none",color:"#fff",fontWeight:700,fontSize:13,cursor:busy?"not-allowed":"pointer",fontFamily:"inherit"}}>
+          {busy?"⟳ Resetting…":"✓ Yes, Reset to Demo"}
+        </button>
+        <button onClick={()=>setConfirm("")} disabled={busy}
+          style={{padding:"10px 16px",borderRadius:9,background:"none",border:"1px solid #2a2a3a",
+            color:"#888",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  if(confirm==="wipe") return(
+    <div style={{background:"#1a0a0a",border:"1px solid #7f1d1d",borderRadius:10,padding:"14px"}}>
+      <div style={{fontSize:13,fontWeight:700,color:"#f87171",marginBottom:8}}>⚠ Wipe All Data</div>
+      <div style={{fontSize:12,color:"#888",marginBottom:14,lineHeight:1.7}}>
+        This will permanently delete ALL data — cloud + browser.<br/>
+        <span style={{color:"#f87171",fontWeight:600}}>Cannot be undone. No demo data loaded.</span>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>doReset("wipe")} disabled={busy}
+          style={{flex:1,padding:"10px",borderRadius:9,background:"#7f1d1d",
+            border:"1px solid #ef4444",color:"#fff",fontWeight:700,fontSize:13,cursor:busy?"not-allowed":"pointer",fontFamily:"inherit"}}>
+          {busy?"⟳ Wiping…":"⚠ Yes, Wipe Everything"}
+        </button>
+        <button onClick={()=>setConfirm("")} disabled={busy}
+          style={{padding:"10px 16px",borderRadius:9,background:"none",border:"1px solid #2a2a3a",
+            color:"#888",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      <button onClick={()=>setConfirm("demo")}
+        style={{width:"100%",padding:"10px",borderRadius:9,background:"linear-gradient(135deg,#0a1020,#0f1a30)",
+          border:"1px solid #1e3a5f",color:"#93c5fd",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+        🔄 Reset to Demo Data &nbsp;<span style={{color:"#555",fontWeight:400}}>— load sample family data for demo/testing</span>
+      </button>
+      <button onClick={()=>setConfirm("wipe")}
+        style={{width:"100%",padding:"10px",borderRadius:9,background:"none",
+          border:"1px solid #3a1a1a",color:"#f87171",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+        ⚠ Wipe All Data &nbsp;<span style={{color:"#555",fontWeight:400}}>— permanently delete everything</span>
+      </button>
     </div>
   );
 }
