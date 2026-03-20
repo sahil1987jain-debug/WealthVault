@@ -2326,35 +2326,37 @@ General rules:
                 <div style={{background:"#070d1a",borderRadius:10,padding:"12px"}}>
                   <div style={{fontSize:11,fontWeight:700,color:"#4ade80",marginBottom:6}}>CAMS (Most AMCs)</div>
                   <div style={{fontSize:11,color:"#666",lineHeight:1.8}}>
-                    Send email to:<br/>
-                    <span style={{color:"#60a5fa",fontFamily:"monospace",fontSize:10}}>mfcs@camsonline.com</span><br/>
-                    Subject: <span style={{color:"#fbbf24"}}>CAS</span><br/>
-                    Body: leave blank<br/>
-                    <span style={{color:"#555",fontSize:10}}>From your registered email</span>
+                    1. Click button below<br/>
+                    2. Enter your registered email + PAN<br/>
+                    3. Select <span style={{color:"#fbbf24"}}>Detailed</span> statement type<br/>
+                    4. Set password for PDF<br/>
+                    5. Click Submit → PDF in email
                   </div>
-                  <button onClick={()=>window.open("mailto:mfcs@camsonline.com?subject=CAS")}
+                  <button onClick={()=>window.open("https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement","_blank")}
                     style={{marginTop:8,width:"100%",padding:"6px",borderRadius:7,background:"#0a1a0a",border:"1px solid #16a34a",color:"#4ade80",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>
-                    📧 Open Email Draft
+                    🔗 Open CAMS Website
                   </button>
                 </div>
                 <div style={{background:"#070d1a",borderRadius:10,padding:"12px"}}>
                   <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:6}}>KFintech (Franklin etc.)</div>
                   <div style={{fontSize:11,color:"#666",lineHeight:1.8}}>
-                    Send email to:<br/>
-                    <span style={{color:"#60a5fa",fontFamily:"monospace",fontSize:10}}>investor@kfintech.com</span><br/>
-                    Subject: <span style={{color:"#fbbf24"}}>CAS</span><br/>
-                    Body: leave blank<br/>
-                    <span style={{color:"#555",fontSize:10}}>From your registered email</span>
+                    1. Click button below<br/>
+                    2. Enter PAN + registered email<br/>
+                    3. Select <span style={{color:"#fbbf24"}}>Detailed</span> statement<br/>
+                    4. Set PDF password<br/>
+                    5. Click Submit → PDF in email
                   </div>
-                  <button onClick={()=>window.open("mailto:investor@kfintech.com?subject=CAS")}
+                  <button onClick={()=>window.open("https://mfs.kfintech.com/investor/General/ConsolidatedAccountStatement","_blank")}
                     style={{marginTop:8,width:"100%",padding:"6px",borderRadius:7,background:"#0a0a1a",border:"1px solid #7c3aed",color:"#a78bfa",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>
-                    📧 Open Email Draft
+                    🔗 Open KFintech Website
                   </button>
                 </div>
               </div>
-              <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
-                You'll receive the PDF within minutes · Password = first 8 chars of PAN (uppercase) + DOB as DDMMYYYY<br/>
-                <span style={{color:"#4ade80"}}>✓ No AI key needed — CAS is parsed automatically</span>
+              <div style={{fontSize:11,color:"#555",lineHeight:1.8}}>
+                📌 PDF password = whatever you set while requesting (not PAN-based)<br/>
+                📌 Use <span style={{color:"#aaa"}}>01/01/1990</span> as start date to get complete history<br/>
+                📌 Select <span style={{color:"#aaa"}}>"With zero balance folios"</span> to see all holdings<br/>
+                <span style={{color:"#4ade80"}}>✓ No AI key needed — CAS PDFs are parsed automatically</span>
               </div>
             </div>
           )}
