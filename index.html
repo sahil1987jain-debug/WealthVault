@@ -9641,13 +9641,15 @@ function DataResetPanel({notify, setData, authUser}){
           notify("✓ Cloud data deleted");
         }catch(e){ console.warn("Firestore delete failed:", e.message); }
       }
-      // 2. Clear localStorage
+      // 2. Clear localStorage (demo reset keeps PIN, wipe clears everything)
       localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem("wv_pin_hash");
-      localStorage.removeItem("wv_pin_salt");
-      localStorage.removeItem("wv_pin_otp");
-      localStorage.removeItem("wv_pin_attempts");
-      localStorage.removeItem("wv_pin_lockout");
+      if(mode==="wipe"){
+        localStorage.removeItem("wv_pin_hash");
+        localStorage.removeItem("wv_pin_salt");
+        localStorage.removeItem("wv_pin_otp");
+        localStorage.removeItem("wv_pin_attempts");
+        localStorage.removeItem("wv_pin_lockout");
+      }
       // 3. For demo mode: set DEFAULT_DATA immediately so it's ready
       if(mode==="demo"){
         localStorage.removeItem(STORAGE_KEY); // ensure clean
@@ -9670,8 +9672,9 @@ function DataResetPanel({notify, setData, authUser}){
         ✓ Delete your data from Firestore cloud<br/>
         ✓ Clear browser localStorage<br/>
         ✓ Load demo data (Arjun Sharma family)<br/>
+        ✓ <span style={{color:"#4ade80"}}>Your PIN is preserved — no need to set a new one</span><br/>
         <span style={{color:"#f87171"}}>✗ Your real financial data will be deleted from this app</span><br/>
-        <span style={{color:"#fbbf24",fontSize:11}}>Take a backup first if needed (Reports → Export)</span>
+        <span style={{color:"#fbbf24",fontSize:11}}>Take a backup first if needed (Cloud Sync → Download Backup)</span>
       </div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>doReset("demo")} disabled={busy}
