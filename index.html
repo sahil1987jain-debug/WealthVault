@@ -9641,7 +9641,7 @@ function DataResetPanel({notify, setData, authUser}){
           notify("✓ Cloud data deleted");
         }catch(e){ console.warn("Firestore delete failed:", e.message); }
       }
-      // 2. Clear localStorage (demo reset keeps PIN, wipe clears everything)
+      // 2. Clear localStorage (demo reset keeps PIN + salt, wipe clears everything)
       localStorage.removeItem(STORAGE_KEY);
       if(mode==="wipe"){
         localStorage.removeItem("wv_pin_hash");
