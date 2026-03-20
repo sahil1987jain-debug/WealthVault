@@ -1555,7 +1555,7 @@ function App(){
         )}
         {tab==="dashboard"&&<Dashboard data={data} netWorth={netWorth} totalAssets={totalAssets} totalLiab={totalLiab} totalIncome={totalIncome} totalExpenses={totalExpenses} cashflow={cashflow} setTab={setTab} activeMember={activeMember} setActiveMember={setActiveMember}/>}
         {tab==="smartimport"&&<SmartImport data={data} setData={setData} notify={notify} apiKey={apiKey} setTab={setTab}/>}
-        {tab==="assets"&&<AssetsTab data={data} setData={setData} notify={notify} apiKey={apiKey} activeMember={activeMember} setActiveMember={setActiveMember}/>}
+        {tab==="assets"&&<AssetsTab data={data} setData={setData} notify={notify} apiKey={apiKey} activeMember={activeMember} setActiveMember={setActiveMember} setTab={setTab}/>}
         {tab==="liabilities"&&<LiabilitiesTab data={data} setData={setData} notify={notify} apiKey={apiKey} activeMember={activeMember} setActiveMember={setActiveMember}/>}
         {tab==="insurance"&&<InsuranceTab data={data} setData={setData} notify={notify} apiKey={apiKey} activeMember={activeMember} setActiveMember={setActiveMember}/>}
         {tab==="income"&&<IncomeTab data={data} setData={setData} notify={notify} setTab={setTab} activeMember={activeMember} setActiveMember={setActiveMember}/>}
@@ -1622,11 +1622,87 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     {id:"cc",label:"Credit Card Statement",icon:"💳"},
     {id:"demat",label:"Demat / Portfolio",icon:"📊"},
     {id:"mf",label:"Mutual Fund Statement",icon:"📈"},
+    {id:"cas",label:"CAS Statement (CAMS/KFintech)",icon:"📑"},
     {id:"insurance",label:"Insurance Policy",icon:"🛡"},
     {id:"loan",label:"Loan Statement",icon:"🏠"},
     {id:"itr",label:"ITR / Form 16",icon:"📋"},
     {id:"fd",label:"FD / Bank Certificate",icon:"🏛"},
   ];
+
+  // ── CAS (Consolidated Account Statement) Parser ────────────────────────────
+  // Parses CAMS/KFintech CAS PDF text — works without AI
+  // Password for CAS PDF: first 8 chars of PAN (uppercase) + DOB in DDMMYYYY
+  const parseCASText = (text) => {
+    const assets = [];
+    const lines  = text.split(/\n/).map(l=>l.trim()).filter(Boolean);
+
+    let currentFolio = "";
+    let currentScheme = "";
+    let currentRTA = "";
+
+    // Detect RTA
+    if(/CAMS|Computer Age/i.test(text)) currentRTA="CAMS";
+    else if(/KFin|Karvy/i.test(text)) currentRTA="KFintech";
+
+    // Parse each line
+    for(let i=0; i<lines.length; i++){
+      const line = lines[i];
+
+      // Folio number
+      const folioM = line.match(/Folio\s*(?:No\.?|Number)?\s*[:\-]?\s*([A-Z0-9\/]+)/i);
+      if(folioM) currentFolio = folioM[1];
+
+      // Scheme name (usually a standalone line with fund name)
+      if(/(?:Fund|Scheme|Plan|Direct|Regular|Growth|IDCW)/i.test(line) && line.length>20 && line.length<120
+         && !/Units|NAV|Value|Date|Bal/i.test(line)){
+        currentScheme = line.replace(/\s*-+\s*/g," ").trim();
+      }
+
+      // Units/NAV/Value line — various formats from different RTAs
+      // Format: "Closing Balance: 125.234 units @ 45.67 = 5,714.56"
+      let unitsM = line.match(/(?:Closing Bal(?:ance)?|Units)[:\s]+([0-9,]+\.?[0-9]*)\s+(?:units?)?/i)
+                 ||line.match(/([0-9,]+\.[0-9]+)\s+([0-9,]+\.[0-9]+)\s+([0-9,]+\.[0-9]+)/)// units nav value
+                 ||line.match(/Balance\s*:?\s*([0-9,]+\.[0-9]+)/i);
+
+      const navM  = line.match(/NAV\s*[:\s]\s*([0-9,]+\.[0-9]+)/i)
+                  ||line.match(/(?:@|at)\s*(?:INR|Rs\.?)?\s*([0-9,]+\.[0-9]+)/i);
+      const valM  = line.match(/(?:Value|Current Val|Market Val)\s*[:\s]\s*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:,[0-9]+)*\.?[0-9]*)/i)
+                  ||line.match(/(?:INR|Rs\.?|₹)\s*([0-9,]+(?:,[0-9]+)*\.[0-9]+)/i);
+
+      // Check for invested amount
+      const invM  = line.match(/(?:Invested|Cost|Purchase)\s*[:\s]\s*(?:INR|Rs\.?|₹)?\s*([0-9,]+(?:,[0-9]+)*\.?[0-9]*)/i);
+
+      if(unitsM && currentScheme){
+        const units   = parseFloat((unitsM[1]||"0").replace(/,/g,""));
+        const nav     = navM  ? parseFloat(navM[1].replace(/,/g,""))  : 0;
+        const value   = valM  ? parseFloat(valM[1].replace(/,/g,""))  : units*nav;
+        const invested= invM  ? parseFloat(invM[1].replace(/,/g,""))  : 0;
+
+        if(units>0 && currentScheme.length>5){
+          assets.push({
+            category: "Mutual Funds",
+            name: currentScheme,
+            folio: currentFolio,
+            units,
+            nav,
+            value: value||units*nav,
+            invested,
+            broker: currentRTA||"CAMS",
+            details: `Folio: ${currentFolio} · ${currentRTA}`,
+            confidence: nav>0&&units>0 ? "high" : "medium",
+          });
+        }
+      }
+    }
+
+    // Deduplicate by folio+scheme
+    const seen = new Set();
+    return assets.filter(a=>{
+      const key=`${a.folio}_${a.name.slice(0,20)}`;
+      if(seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+  };
 
   const handleFiles=useCallback((fileList)=>{
     const accepted=[...fileList].filter(f=>{
@@ -1964,6 +2040,32 @@ General rules:
       const finalPrompt = isGroq ? groqPrompt : fullPrompt;
       contentParts.push({type:"text", text: finalPrompt});
 
+      // ── CAS Fast-Path: use dedicated parser, skip AI ──────────────────────
+      if(docType==="cas"){
+        setParseLog("Parsing CAS statement (CAMS/KFintech)…");
+        const casText = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n");
+        const casAssets = parseCASText(casText);
+        if(casAssets.length>0){
+          const withIds = casAssets.map(a=>({
+            ...a,
+            id:"tmp_"+Math.random().toString(36).slice(2),
+            value:   parseFloat(a.value)||0,
+            units:   parseFloat(a.units)||0,
+            nav:     parseFloat(a.nav)||0,
+            invested:parseFloat(a.invested)||0,
+          }));
+          const sel={};
+          withIds.forEach(i=>{ sel[i.id]=true; });
+          const parsed={assets:withIds,liabilities:[],income:[],expenses:[],insurance:[],
+            documentType:"Mutual Fund Statement",documentSummary:`CAS — ${withIds.length} MF holdings`};
+          setParsed(parsed); setSelected(sel); setStage("review"); setParseLog("");
+          notify(`✓ Found ${withIds.length} MF holdings from CAS — no AI needed!`);
+          setParsing(false); return;
+        }
+        // If CAS regex found nothing, fall through to AI
+        setParseLog("CAS regex found nothing — trying AI…");
+      }
+
       const aiProvider = apiKey.trim().startsWith("AIzaSy") ? "Gemini" : apiKey.trim().startsWith("gsk_") ? "Groq" : "Claude";
       setParseLog(`Sending to ${aiProvider} AI for analysis...`);
 
@@ -2241,7 +2343,48 @@ General rules:
             </div>
           </div>
 
-          {/* Drop zone */}
+          {/* CAS Helper — shown when CAS type selected */}
+          {docType==="cas"&&(
+            <div style={{background:"linear-gradient(135deg,#0a1020,#0f1a30)",border:"1px solid #1e3a6e",borderRadius:12,padding:"14px 16px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#93c5fd",marginBottom:8}}>📑 How to get your CAS Statement</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                <div style={{background:"#070d1a",borderRadius:10,padding:"12px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#4ade80",marginBottom:6}}>CAMS (Most AMCs)</div>
+                  <div style={{fontSize:11,color:"#666",lineHeight:1.8}}>
+                    Send email to:<br/>
+                    <span style={{color:"#60a5fa",fontFamily:"monospace",fontSize:10}}>mfcs@camsonline.com</span><br/>
+                    Subject: <span style={{color:"#fbbf24"}}>CAS</span><br/>
+                    Body: leave blank<br/>
+                    <span style={{color:"#555",fontSize:10}}>From your registered email</span>
+                  </div>
+                  <button onClick={()=>window.open("mailto:mfcs@camsonline.com?subject=CAS")}
+                    style={{marginTop:8,width:"100%",padding:"6px",borderRadius:7,background:"#0a1a0a",border:"1px solid #16a34a",color:"#4ade80",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>
+                    📧 Open Email Draft
+                  </button>
+                </div>
+                <div style={{background:"#070d1a",borderRadius:10,padding:"12px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:6}}>KFintech (Franklin etc.)</div>
+                  <div style={{fontSize:11,color:"#666",lineHeight:1.8}}>
+                    Send email to:<br/>
+                    <span style={{color:"#60a5fa",fontFamily:"monospace",fontSize:10}}>investor@kfintech.com</span><br/>
+                    Subject: <span style={{color:"#fbbf24"}}>CAS</span><br/>
+                    Body: leave blank<br/>
+                    <span style={{color:"#555",fontSize:10}}>From your registered email</span>
+                  </div>
+                  <button onClick={()=>window.open("mailto:investor@kfintech.com?subject=CAS")}
+                    style={{marginTop:8,width:"100%",padding:"6px",borderRadius:7,background:"#0a0a1a",border:"1px solid #7c3aed",color:"#a78bfa",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>
+                    📧 Open Email Draft
+                  </button>
+                </div>
+              </div>
+              <div style={{fontSize:11,color:"#555",lineHeight:1.7}}>
+                You'll receive the PDF within minutes · Password = first 8 chars of PAN (uppercase) + DOB as DDMMYYYY<br/>
+                <span style={{color:"#4ade80"}}>✓ No AI key needed — CAS is parsed automatically</span>
+              </div>
+            </div>
+          )}
+
+          {/* Upload drop zone */}
           <div className={`upload-zone${dragOver?" drag-over":""}`}
             onDragOver={e=>{e.preventDefault();setDragOver(true);}}
             onDragLeave={()=>setDragOver(false)}
@@ -6120,7 +6263,227 @@ function TabSummaryCard({segs, grandTotal, stats, legendTitle}){
   );
 }
 
-function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember}){
+// ── UPSTOX CONNECTOR ──────────────────────────────────────────────────────────
+// Uses Upstox API v2 — free for personal use (1000 req/30 min)
+// Token: user generates daily from upstox.com/developer or via OAuth redirect
+const UPSTOX_API = "https://api.upstox.com/v2";
+
+// ── BROKER CONNECTOR (Upstox / Zerodha / Groww) ───────────────────────────────
+// Indian broker APIs block direct browser calls (CORS policy)
+// Best approach: download holdings CSV from broker → Smart Import parses it
+// This connector guides the user through that flow + handles manually pasted tokens
+
+const BROKER_CONFIGS = {
+  upstox: {
+    name:"Upstox", color:"#7c3aed", icon:"📈",
+    downloadUrl:"https://account.upstox.com/reports",
+    downloadHint:"Reports → Holding Statement → Download CSV",
+    loginUrl:"https://login.upstox.com",
+    apiBase:"https://api.upstox.com/v2",
+    holdingsPath:"/portfolio/long-term-holdings",
+  },
+  zerodha: {
+    name:"Zerodha", color:"#e04d2a", icon:"🟠",
+    downloadUrl:"https://console.zerodha.com/reports/holdings",
+    downloadHint:"Holdings page → Download CSV (top right)",
+    loginUrl:"https://kite.zerodha.com",
+    apiBase:"https://api.kite.trade",
+    holdingsPath:"/holdings",
+  },
+  groww: {
+    name:"Groww", color:"#00b386", icon:"🟢",
+    downloadUrl:"https://groww.in/stocks/portfolio",
+    downloadHint:"Portfolio → ⋮ menu → Download as Excel",
+    loginUrl:"https://groww.in",
+    apiBase:null,
+    holdingsPath:null,
+  },
+  angelone: {
+    name:"Angel One", color:"#e53935", icon:"😇",
+    downloadUrl:"https://trade.angelone.in/portfolio/holdings",
+    downloadHint:"Holdings → Download (top right corner)",
+    loginUrl:"https://trade.angelone.in",
+    apiBase:"https://apiconnect.angelbroking.com",
+    holdingsPath:"/rest/secure/angelbroking/portfolio/v1/getHolding",
+  },
+};
+
+function BrokerConnector({data, setData, notify, activeMember, setTab}){
+  const [broker,    setBroker]    = useState("upstox");
+  const [token,     setToken]     = useState(()=>sessionStorage.getItem("wv_broker_token")||"");
+  const [tokenInput,setTokenInput]= useState("");
+  const [syncing,   setSyncing]   = useState(false);
+  const [lastSync,  setLastSync]  = useState(()=>sessionStorage.getItem("wv_broker_lastsync")||"");
+  const [expanded,  setExpanded]  = useState(false);
+  const [showToken, setShowToken] = useState(false);
+  const cfg = BROKER_CONFIGS[broker];
+
+  const mid = activeMember==="all"?"self":activeMember;
+
+  const saveToken = () => {
+    const t = tokenInput.trim();
+    if(!t){ notify("Paste your access token first","error"); return; }
+    sessionStorage.setItem("wv_broker_token", t);
+    sessionStorage.setItem("wv_broker_name", broker);
+    setToken(t); setTokenInput(""); notify("✓ Token saved");
+  };
+
+  // Try direct API call — works only if broker allows CORS (unlikely for most)
+  const trySyncAPI = async() => {
+    if(!cfg.apiBase||!cfg.holdingsPath){ notify("This broker doesn't have a public API","error"); return; }
+    if(!token){ notify("Paste your access token first","error"); return; }
+    setSyncing(true);
+    try{
+      const headers = {Authorization:`Bearer ${token}`, Accept:"application/json"};
+      if(broker==="upstox") headers["Api-Version"]="2.0";
+      const resp = await fetch(cfg.apiBase+cfg.holdingsPath, {headers, mode:"cors"});
+      if(!resp.ok){
+        if(resp.status===0||resp.type==="opaque") throw new Error("CORS_BLOCKED");
+        throw new Error("API error "+resp.status);
+      }
+      const json = await resp.json();
+      const holdings = json?.data||json?.holdings||[];
+      if(!holdings.length){ notify("No holdings found","info"); setSyncing(false); return; }
+
+      const newAssets = holdings.map(h=>({
+        id:"broker_"+(h.isin||h.tradingsymbol||Math.random().toString(36))+"_"+Date.now(),
+        memberId:mid,
+        category:"Stocks",
+        name: h.company_name||h.tradingsymbol||h.symbol,
+        ticker: h.trading_symbol||h.tradingsymbol||h.symbol,
+        isin: h.isin,
+        exchange: (h.exchange||"NSE").replace("NSE_EQ","NSE").replace("BSE_EQ","BSE"),
+        qty: h.quantity||h.t1_quantity||0,
+        buyPrice: Math.round((h.average_price||h.average_cost||0)*100)/100,
+        value: Math.round(((h.last_price||h.ltp||h.close_price||h.average_price||0)*(h.quantity||0))*100)/100,
+        invested: Math.round((h.average_price||0)*(h.quantity||0)*100)/100,
+        broker: cfg.name,
+        date: today(),
+        details: `${cfg.name} · Avg ₹${h.average_price||h.average_cost||0}`,
+        _source:"broker_sync",
+      }));
+
+      setData(d=>({...d, assets:[...(d.assets||[]).filter(a=>a._source!=="broker_sync"), ...newAssets]}));
+      const ts = new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
+      setLastSync(ts); sessionStorage.setItem("wv_broker_lastsync",ts);
+      notify(`✓ Synced ${newAssets.length} holdings from ${cfg.name}`);
+    }catch(e){
+      if(e.message==="CORS_BLOCKED"||e.message.includes("Failed to fetch")||e.message.includes("NetworkError")){
+        notify(`${cfg.name} API blocked browser access (CORS). Use the CSV download method below.`,"error");
+      } else {
+        notify("Sync failed: "+e.message,"error");
+      }
+    }
+    setSyncing(false);
+  };
+
+  const clearBroker = () => {
+    sessionStorage.removeItem("wv_broker_token");
+    sessionStorage.removeItem("wv_broker_lastsync");
+    setToken(""); setLastSync("");
+    setData(d=>({...d, assets:(d.assets||[]).filter(a=>a._source!=="broker_sync")}));
+    notify("Broker data cleared");
+  };
+
+  return(
+    <div style={{background:"linear-gradient(135deg,#0a0f1e,#0f1a2e)",border:"1px solid #1e3a5f",borderRadius:14,padding:"14px 16px",marginBottom:16}}>
+      {/* Header row */}
+      <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setExpanded(!expanded)}>
+        <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#2563eb)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>📈</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#93c5fd"}}>Broker Sync</div>
+          <div style={{fontSize:11,color:"#555"}}>{lastSync?`Last synced: ${lastSync}`:"Import holdings from Upstox, Zerodha, Groww or Angel One"}</div>
+        </div>
+        <span style={{color:"#555",fontSize:12}}>{expanded?"▲":"▼"}</span>
+      </div>
+
+      {expanded&&(
+        <div style={{marginTop:14,borderTop:"1px solid #1e3a5f",paddingTop:14}}>
+          {/* Broker selector */}
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+            {Object.entries(BROKER_CONFIGS).map(([id,c])=>(
+              <button key={id} onClick={()=>setBroker(id)}
+                style={{padding:"5px 14px",borderRadius:20,border:`1px solid ${broker===id?c.color:"#2a2a3a"}`,
+                  background:broker===id?`${c.color}22`:"transparent",color:broker===id?c.color:"#666",
+                  cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:broker===id?700:400}}>
+                {c.icon} {c.name}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Method 1: CSV Download (RECOMMENDED) ── */}
+          <div style={{background:"#052e16",border:"1px solid #16a34a",borderRadius:10,padding:"12px 14px",marginBottom:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#4ade80",marginBottom:6}}>
+              ✅ Recommended: Download & Import (Always works)
+            </div>
+            <div style={{fontSize:11,color:"#666",marginBottom:10,lineHeight:1.8}}>
+              <span style={{color:"#888"}}>{cfg.downloadHint}</span>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>window.open(cfg.loginUrl,"_blank")}
+                style={{padding:"7px 14px",borderRadius:8,background:"#0a1a0a",border:"1px solid #16a34a",
+                  color:"#4ade80",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
+                🔗 Open {cfg.name}
+              </button>
+              <button onClick={()=>window.open(cfg.downloadUrl,"_blank")}
+                style={{padding:"7px 14px",borderRadius:8,background:"#0a1a0a",border:"1px solid #16a34a",
+                  color:"#4ade80",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
+                ⬇ Download Holdings
+              </button>
+              <button onClick={()=>setTab("smartimport")}
+                style={{padding:"7px 14px",borderRadius:8,background:"linear-gradient(135deg,#7c3aed,#2563eb)",border:"none",
+                  color:"#fff",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:700}}>
+                ✦ Import with AI →
+              </button>
+            </div>
+            <div style={{fontSize:10,color:"#1a6a1a",marginTop:8}}>
+              Download CSV/Excel from {cfg.name} → go to Smart Import → select "Demat / Portfolio" → upload → done in 30 seconds
+            </div>
+          </div>
+
+          {/* ── Method 2: Direct API (may fail due to CORS) ── */}
+          {cfg.apiBase&&(
+            <div style={{background:"#0a0a14",border:"1px solid #2a2a3a",borderRadius:10,padding:"12px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,cursor:"pointer"}} onClick={()=>setShowToken(!showToken)}>
+                <div style={{fontSize:12,fontWeight:600,color:"#888"}}>⚡ Try Direct API Sync {showToken?"▲":"▼"}</div>
+                <div style={{fontSize:10,color:"#444",marginLeft:"auto"}}>May fail due to broker CORS policy</div>
+              </div>
+              {showToken&&(
+                <>
+                  <div style={{fontSize:11,color:"#555",marginBottom:10,lineHeight:1.7}}>
+                    Generate an API access token from {cfg.name} developer portal, paste it here and try syncing directly. 
+                    <span style={{color:"#f87171"}}> If you see "Failed to fetch", use the CSV method above instead.</span>
+                  </div>
+                  {!token?(
+                    <div style={{display:"flex",gap:8}}>
+                      <input className="input" value={tokenInput} onChange={e=>setTokenInput(e.target.value)}
+                        placeholder={`Paste ${cfg.name} access token…`} style={{flex:1,fontSize:12}}/>
+                      <button onClick={saveToken} className="btn btn-ghost" style={{fontSize:12}}>Save</button>
+                    </div>
+                  ):(
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      <div style={{fontSize:11,color:"#4ade80"}}>✓ Token saved</div>
+                      <button onClick={trySyncAPI} disabled={syncing}
+                        style={{padding:"6px 14px",borderRadius:8,background:syncing?"#1a1a2e":"linear-gradient(135deg,#7c3aed,#2563eb)",
+                          border:"none",color:syncing?"#555":"#fff",fontSize:12,cursor:syncing?"not-allowed":"pointer",fontFamily:"inherit",fontWeight:700}}>
+                        {syncing?"⟳ Trying…":"↻ Try Sync"}
+                      </button>
+                      <button onClick={clearBroker} style={{padding:"6px 12px",borderRadius:8,background:"none",border:"1px solid #2a1a1a",color:"#f87171",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember,setTab}){
   const family=data.family||[{id:"self",name:"Me",relation:"Self",color:"#a78bfa"}];
   const filterItems=items=>activeMember==="all"?items:items.filter(i=>(i.memberId||"self")===activeMember);
   const [formCat,setFormCat]             = useState(null);
@@ -6204,7 +6567,9 @@ function AssetsTab({data,setData,notify,apiKey,activeMember,setActiveMember}){
       </div>
 
       <FamilyMemberBar family={family} active={activeMember} setActive={setActiveMember}/>
-      {/* Import/reconcile banners */}
+
+      {/* Broker Connector */}
+      <BrokerConnector data={data} setData={setData} notify={notify} activeMember={activeMember} setTab={setTab}/>
       {importPreview?.length>0&&!reconcileData&&(
         <div style={{background:"#0d1a0d",border:"1px solid #16a34a",borderRadius:12,padding:14,marginBottom:14}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -7659,23 +8024,72 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
 
   // ── Smart SMS Parser ───────────────────────────────────────────────────────
   const MERCHANT_CATS = {
-    zomato:"Dining",swiggy:"Dining",dominos:"Dining",mcdonalds:"Dining",kfc:"Dining",starbucks:"Dining",dunzo:"Dining",
-    bigbasket:"Groceries",dmart:"Groceries",reliance:"Groceries",blinkit:"Groceries",zepto:"Groceries",jiomart:"Groceries",
-    amazon:"Shopping",flipkart:"Shopping",myntra:"Shopping",meesho:"Shopping",ajio:"Shopping",nykaa:"Shopping",
-    uber:"Transport",ola:"Transport",rapido:"Transport",petrol:"Transport",fuel:"Transport",irctc:"Transport",
-    netflix:"Entertainment",hotstar:"Entertainment",spotify:"Entertainment",youtube:"Entertainment",bookmyshow:"Entertainment",
-    hospital:"Medical",pharmacy:"Medical",medplus:"Medical",apollo:"Medical","1mg":"Medical",pharmeasy:"Medical",
-    school:"Education",college:"Education",udemy:"Education",coursera:"Education",byjus:"Education",
-    lic:"Insurance Premium",hdfc_life:"Insurance Premium",
-    emi:"EMI",home_loan:"EMI",car_loan:"EMI",
-    sip:"SIP/Investment",mutual:"SIP/Investment",zerodha:"SIP/Investment",groww:"SIP/Investment",kuvera:"SIP/Investment",
-    electricity:"Utilities",water:"Utilities",gas:"Utilities",broadband:"Utilities",postpaid:"Utilities",jio:"Utilities",airtel:"Utilities",
+    // Dining
+    zomato:"Dining",swiggy:"Dining",dominos:"Dining",dominoes:"Dining",mcdonalds:"Dining",kfc:"Dining",
+    starbucks:"Dining",dunzo:"Dining",pizzahut:"Dining",subway:"Dining",burgerking:"Dining",
+    haldirams:"Dining",barbeque:"Dining",chaayos:"Dining",cafecoffeeday:"Dining",ccd:"Dining",
+    fasoos:"Dining",freshmenu:"Dining",behrouz:"Dining",box8:"Dining",eatsure:"Dining",
+    // Groceries
+    bigbasket:"Groceries",dmart:"Groceries",reliance:"Groceries",blinkit:"Groceries",
+    zepto:"Groceries",jiomart:"Groceries",grofers:"Groceries",instamart:"Groceries",
+    milkbasket:"Groceries",licious:"Groceries",meatigo:"Groceries",fresho:"Groceries",
+    naturalsbasket:"Groceries",morningcart:"Groceries",
+    // Shopping
+    amazon:"Shopping",flipkart:"Shopping",myntra:"Shopping",meesho:"Shopping",ajio:"Shopping",
+    nykaa:"Shopping",snapdeal:"Shopping",shopsy:"Shopping",tatacliq:"Shopping",croma:"Shopping",
+    vijaysales:"Shopping",reliancedigital:"Shopping",decathlon:"Shopping",westside:"Shopping",
+    pantaloons:"Shopping",maxfashion:"Shopping",lifestyle:"Shopping",shoppersstop:"Shopping",
+    // Transport
+    uber:"Transport",ola:"Transport",rapido:"Transport",petrol:"Transport",fuel:"Transport",
+    irctc:"Transport",redbus:"Transport",abhibus:"Transport",goibibo:"Transport",yatra:"Transport",
+    indigo:"Transport",airindia:"Transport",spicejet:"Transport",vistara:"Transport",akasa:"Transport",
+    fastag:"Transport",iocl:"Transport",hpcl:"Transport",bpcl:"Transport",reliancepetrol:"Transport",
+    // Entertainment
+    netflix:"Entertainment",hotstar:"Entertainment",spotify:"Entertainment",youtube:"Entertainment",
+    bookmyshow:"Entertainment",primevideo:"Entertainment",sonyliv:"Entertainment",zee5:"Entertainment",
+    jiocinema:"Entertainment",mxplayer:"Entertainment",gaana:"Utilities",wynk:"Entertainment",
+    pvr:"Entertainment",inox:"Entertainment",
+    // Medical
+    hospital:"Medical",pharmacy:"Medical",medplus:"Medical",apollo:"Medical","1mg":"Medical",
+    pharmeasy:"Medical",netmeds:"Medical",tatahealth:"Medical",practo:"Medical",lybrate:"Medical",
+    healthians:"Medical",thyrocare:"Medical",srllabs:"Medical",
+    // Education
+    school:"Education",college:"Education",udemy:"Education",coursera:"Education",
+    byjus:"Education",whitehatjr:"Education",vedantu:"Education",unacademy:"Education",
+    physicswallah:"Education",learnapp:"Education",skillshare:"Education",simplilearn:"Education",
+    // Insurance
+    lic:"Insurance Premium",licindia:"Insurance Premium",hdfclife:"Insurance Premium",
+    iciciprulife:"Insurance Premium",sbigeneral:"Insurance Premium",hdfcergo:"Insurance Premium",
+    starhealth:"Insurance Premium",niacl:"Insurance Premium",gicre:"Insurance Premium",
+    coverfox:"Insurance Premium",policybazaar:"Insurance Premium",acko:"Insurance Premium",
+    // EMI/Loans
+    emi:"EMI",homeloan:"EMI",carloan:"EMI",bajajfinserv:"EMI",fullerton:"EMI",
+    hdfc_loan:"EMI",iciciloan:"EMI",axisloan:"EMI",muthoot:"EMI",manappuram:"EMI",
+    tvsfinance:"EMI",mahindrafinance:"EMI",shriramfinance:"EMI",
+    // Investments
+    sip:"SIP/Investment",mutual:"SIP/Investment",zerodha:"SIP/Investment",groww:"SIP/Investment",
+    kuvera:"SIP/Investment",parag:"SIP/Investment",nps:"SIP/Investment",ppf:"SIP/Investment",
+    upstox:"SIP/Investment",angels:"SIP/Investment",motilal:"SIP/Investment",iifl:"SIP/Investment",
+    coinswitch:"SIP/Investment",wazirx:"SIP/Investment",
+    // Utilities
+    electricity:"Utilities",bescom:"Utilities",torrent:"Utilities",tata_power:"Utilities",
+    water:"Utilities",gas:"Utilities",mahanagar:"Utilities",indraprastha:"Utilities",
+    broadband:"Utilities",postpaid:"Utilities",jio:"Utilities",airtel:"Utilities",
+    vodafone:"Utilities",bsnl:"Utilities",tatasky:"Utilities",dishtv:"Utilities",
+    d2h:"Utilities",hathway:"Utilities",act:"Utilities",
+    // Travel
+    makemytrip:"Travel",cleartrip:"Travel",ixigo:"Travel",oyo:"Travel",
+    treebo:"Travel",fabhotels:"Travel",booking:"Travel",airbnb:"Travel",
+    // Recharge/Bills
+    recharge:"Utilities",billpay:"Utilities",electricity_bill:"Utilities",
   };
+
   const guessCategory = name => {
-    const n=(name||"").toLowerCase().replace(/[\s\-_]/g,"");
+    const n=(name||"").toLowerCase().replace(/[\s\-_\.]/g,"");
     for(const [k,c] of Object.entries(MERCHANT_CATS)) if(n.includes(k)) return c;
     return "Other Expense";
   };
+
   const parseDate = text => {
     const months={jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
     let m;
@@ -7690,18 +8104,52 @@ function ExpensesTab({data,setData,notify,activeMember,setActiveMember}){
     const lines=text.split(/\n/).filter(l=>l.trim().length>10);
     const txns=[];
     lines.forEach((line,idx)=>{
-      const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/i);
+      // Match Indian amount formats: INR/Rs./₹ with optional comma-separated numbers
+      const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/i)
+                ||line.match(/([\d,]+(?:\.\d{1,2})?)\s*(?:INR|Rs\.?|₹)/i)
+                ||line.match(/(?:for|of)\s+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i);
       if(!amtM) return;
       const amount=parseFloat(amtM[1].replace(/,/g,""));
       if(!amount||amount<1) return;
-      const isDebit =/debited|spent|paid|purchase|withdrawn|debit/i.test(line);
-      const isCredit=/credited|received|credit|deposit|refund/i.test(line);
+
+      // Detect debit/credit with expanded patterns
+      const isDebit  = /debited|debit|spent|paid|purchase|withdrawn|payment|sent|transferred to|pos txn|pur at|autopay/i.test(line);
+      const isCredit = /credited|credit|received|deposit|refund|cashback|reversal|added|salary|neft cr|imps cr/i.test(line);
       if(!isDebit&&!isCredit) return;
+
       const txnDate=parseDate(line);
       if(txnDate<fromD||txnDate>toD) return;
-      const mM=line.match(/(?:at|to|from|by)\s+([A-Za-z][A-Za-z0-9\s&.\-]{1,28}?)(?:\s+on|\s+for|\.|\s*,|\s+Ref|\s+UPI|\s+via|$)/i);
-      const name=mM?mM[1].trim():(isCredit?"Bank Credit":"Bank Txn");
-      txns.push({id:`sms_${idx}_${Date.now()}`,name,amount,date:txnDate,type:isDebit?"expense":"credit",category:isDebit?guessCategory(name):"Other Income",raw:line.slice(0,70)});
+
+      // Extract merchant/payee name with multiple patterns
+      let name = "";
+      let m;
+      // UPI pattern: "to MERCHANT" or "at MERCHANT"
+      if((m=line.match(/(?:to|at|from|by|info:|via UPI to|trf to)\s+([A-Za-z][A-Za-z0-9\s&.\-']{1,35}?)(?:\s+on|\s+Ref|\s+UPI|\s+IMPS|\s+NEFT|\.|,|$)/i)))
+        name=m[1].trim();
+      // POS pattern: merchant after "POS"
+      else if((m=line.match(/POS\s+([A-Za-z][A-Za-z0-9\s&.\-]{1,30})/i)))
+        name=m[1].trim();
+      // VPA pattern: UPI id before @
+      else if((m=line.match(/([a-zA-Z0-9.\-_]+)@[a-zA-Z]+/)))
+        name=m[1].replace(/[0-9_.\-]/g," ").trim()||"UPI Transfer";
+      else
+        name=isCredit?"Bank Credit":"Bank Debit";
+
+      // Detect balance from SMS
+      let balance=null;
+      const balM=line.match(/(?:Avl Bal|Available Bal|Bal|Balance)[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i);
+      if(balM) balance=parseFloat(balM[1].replace(/,/g,""));
+
+      txns.push({
+        id:`sms_${idx}_${Date.now()}`,
+        name:name.replace(/\s+/g," ").trim(),
+        amount,
+        date:txnDate,
+        type:isDebit?"expense":"credit",
+        category:isDebit?guessCategory(name):"Other Income",
+        raw:line.slice(0,80),
+        ...(balance!==null?{_balance:balance}:{})
+      });
     });
     return txns;
   };
@@ -7910,6 +8358,33 @@ ${smsText.slice(0,8000)}`;
             <div style={{fontSize:14,fontWeight:600}}>✓ Review Transactions</div>
             <button onClick={()=>{setSmsParsed(null);setSmsSelected({});}} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:12}}>← Back</button>
           </div>
+
+          {/* Summary stats */}
+          {(()=>{
+            const sel = smsParsed.filter(t=>smsSelected[t.id]);
+            const totalExp = sel.filter(t=>t.type==="expense").reduce((s,t)=>s+(t.amount||0),0);
+            const totalInc = sel.filter(t=>t.type!=="expense").reduce((s,t)=>s+(t.amount||0),0);
+            const latestBal = [...smsParsed].reverse().find(t=>t._balance);
+            return(
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                <div style={{background:"#2d0a0a",borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#888",marginBottom:2}}>EXPENSES</div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#f87171",fontFamily:"'DM Mono',monospace"}}>₹{Math.round(totalExp).toLocaleString("en-IN")}</div>
+                </div>
+                <div style={{background:"#052e16",borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#888",marginBottom:2}}>INCOME</div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#4ade80",fontFamily:"'DM Mono',monospace"}}>₹{Math.round(totalInc).toLocaleString("en-IN")}</div>
+                </div>
+                <div style={{background:"#0a0a14",borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#888",marginBottom:2}}>{latestBal?"LATEST BAL":"SELECTED"}</div>
+                  <div style={{fontSize:13,fontWeight:700,color:"#a78bfa",fontFamily:"'DM Mono',monospace"}}>
+                    {latestBal?`₹${Math.round(latestBal._balance).toLocaleString("en-IN")}`:sel.length+" txns"}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{fontSize:12,color:"#555",marginBottom:12}}>
             Found <span style={{color:"#a78bfa",fontWeight:700}}>{smsParsed.length}</span> transactions from {smsFromDate} to {smsToDate}.
             Tick/untick each one before adding.
@@ -7943,6 +8418,7 @@ ${smsText.slice(0,8000)}`;
                       </span>
                       <span style={{fontSize:10,color:"#555"}}>{t.category}</span>
                       <span style={{fontSize:10,color:"#444"}}>{t.date}</span>
+                      {t._balance&&<span style={{fontSize:10,color:"#555"}}>Bal: ₹{Math.round(t._balance).toLocaleString("en-IN")}</span>}
                     </div>
                     {t.raw&&<div style={{fontSize:10,color:"#333",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.raw}</div>}
                   </div>
