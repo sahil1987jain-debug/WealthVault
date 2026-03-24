@@ -58,7 +58,34 @@ if("serviceWorker" in navigator){
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script>if(!window.XLSX){document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"><\/script>');}</script>
+<script>
+// Robust SheetJS loader — tries 3 CDNs in order if first fails
+window._xlsxLoaded = !!window.XLSX;
+if(!window._xlsxLoaded){
+  (function loadXLSX(urls, idx){
+    if(idx >= urls.length) return;
+    var s = document.createElement('script');
+    s.src = urls[idx];
+    s.onload  = function(){ window._xlsxLoaded = true; };
+    s.onerror = function(){ loadXLSX(urls, idx+1); };
+    document.head.appendChild(s);
+  })([
+    'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+  ], 0);
+}
+// Helper: wait for XLSX to be available (up to 10s)
+window.waitForXLSX = function(){
+  return new Promise(function(resolve, reject){
+    if(window.XLSX){ resolve(window.XLSX); return; }
+    var tries = 0;
+    var check = setInterval(function(){
+      if(window.XLSX){ clearInterval(check); resolve(window.XLSX); }
+      else if(++tries > 100){ clearInterval(check); reject(new Error('SheetJS failed to load from all CDNs. Check your internet connection and refresh.')); }
+    }, 100);
+  });
+};
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script>
   if(window.pdfjsLib){
@@ -1777,13 +1804,15 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     return text.slice(0, 80000);
   };
   const readXLSXasText=async(file, password)=>{
-    if(!window.XLSX) throw new Error("SheetJS library not loaded. Please refresh the page.");
+    let XLSX;
+    try{ XLSX = await window.waitForXLSX(); }
+    catch(e){ throw new Error(e.message); }
     const buf=await readFileAsArrayBuffer(file);
     const opts={type:"array"};
     if(password) opts.password=password;
     let wb;
     try{
-      wb=window.XLSX.read(buf,opts);
+      wb=XLSX.read(buf,opts);
     }catch(e){
       const msg=(e.message||"").toLowerCase();
       // SheetJS throws "File is password-protected" or "Encrypted" when wrong/no pwd
@@ -1795,7 +1824,7 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     let result=`Filename: ${file.name}\n\n`;
     wb.SheetNames.forEach(sheetName=>{
       const ws=wb.Sheets[sheetName];
-      const csv=window.XLSX.utils.sheet_to_csv(ws,{blankrows:false});
+      const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
       // Filter out completely empty lines
       const cleaned=csv.split("\n").filter(r=>r.replace(/,/g,"").trim().length>0).join("\n");
       if(cleaned.length>0){
@@ -3313,8 +3342,9 @@ function VaultExcelImport({onImport, onClose}){
   const fileRef = useRef();
 
   const processFile = async(file) => {
-    if(!window.XLSX){ alert("SheetJS not loaded — please refresh."); return; }
+    if(!window.XLSX){ notify("SheetJS not loaded — please refresh.","error"); return; }
     const buf = await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsArrayBuffer(file);});
+    if(!window.XLSX) throw new Error("SheetJS not loaded — please refresh.");
     const wb  = window.XLSX.read(buf,{type:"array"});
     // Use first sheet
     const ws  = wb.Sheets[wb.SheetNames[0]];
@@ -5108,6 +5138,7 @@ function AssetUploadZone({cat, onParsed, notify, apiKey}){
       } else if(name.endsWith(".xlsx")||name.endsWith(".xls")){
         if(!window.XLSX) throw new Error("SheetJS not loaded");
         const buf = await new Promise((r,rj)=>{const rd=new FileReader();rd.onload=()=>r(rd.result);rd.onerror=rj;rd.readAsArrayBuffer(file);});
+        if(!window.XLSX) throw new Error("SheetJS not loaded — please refresh.");
         const wb = window.XLSX.read(buf,{type:"array"});
         let txt = `Excel: ${file.name}\n`;
         wb.SheetNames.forEach(s=>{ txt+=`\n-- Sheet: ${s} --\n`+window.XLSX.utils.sheet_to_csv(wb.Sheets[s],{blankrows:false}); });
