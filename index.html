@@ -57,9 +57,9 @@ if("serviceWorker" in navigator){
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/xlsx@0.20.3/dist/xlsx.full.min.js"></script>
 <script>
-// Robust SheetJS loader — tries 3 CDNs in order if first fails
+// Robust SheetJS loader — tries CDNs in order if primary fails
 window._xlsxLoaded = !!window.XLSX;
 if(!window._xlsxLoaded){
   (function loadXLSX(urls, idx){
@@ -70,7 +70,7 @@ if(!window._xlsxLoaded){
     s.onerror = function(){ loadXLSX(urls, idx+1); };
     document.head.appendChild(s);
   })([
-    'https://unpkg.com/xlsx@0.20.3/dist/xlsx.full.min.js',
+    'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
     'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
   ], 0);
@@ -1806,8 +1806,11 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
   };
   const readXLSXasText=async(file, password)=>{
     let XLSX;
-    try{ XLSX = await window.waitForXLSX(); }
-    catch(e){ throw new Error(e.message); }
+    try{
+      XLSX = await window.waitForXLSX();
+    }catch(e){
+      throw new Error("SheetJS failed to load. Refresh the page and try again.");
+    }
     const buf=await readFileAsArrayBuffer(file);
     const opts={type:"array"};
     if(password) opts.password=password;
@@ -1818,19 +1821,17 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
       const msg=(e.message||"").toLowerCase();
       const errStr=(e.toString()||"").toLowerCase();
       const combined=msg+" "+errStr;
-      // If password was supplied and still fails → wrong password
-      if(password && (combined.includes("password")||combined.includes("encrypt")||combined.includes("protected")||combined.includes("cfb")||combined.includes("incorrect"))){
-        throw new Error("XLSX_WRONG_PASSWORD:"+file.name);
-      }
-      // No password supplied → ask for it
+      // If no password supplied and file is encrypted
       if(!password && (combined.includes("password")||combined.includes("encrypt")||combined.includes("protected")||combined.includes("cfb"))){
         throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
       }
-      // Any other error with no password — might also be encrypted
-      if(!password){
-        throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
+      // Password was supplied but still failed
+      // This could be wrong password OR unsupported encryption format
+      if(password){
+        throw new Error("XLSX_DECRYPT_FAILED:"+file.name+"::"+e.message);
       }
-      throw e;
+      // Any other error — might be encrypted
+      throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
     }
     let result=`Filename: ${file.name}\n\n`;
     wb.SheetNames.forEach(sheetName=>{
@@ -1919,11 +1920,10 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
       const docTypeHint=docType==="auto"?"(auto-detect the document type)":(`This is a: ${DOC_TYPES.find(d=>d.id===docType)?.label}`);
 
       // Groq/Llama needs a simpler, more direct prompt — complex schemas confuse it
-      // Groq/Llama needs a completely different approach:
       // 1. Put the document text FIRST, then the instruction
-      // 2. Use "complete this JSON" framing — Llama is a completion model at heart
-      // 3. Start the JSON in the prompt so Llama just continues it
-      const docTextParts = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n\n");
+      // 2. Use "complete this JSON" framing
+      // 3. Truncate to avoid token limits
+      const docTextParts = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n\n").slice(0,50000);
       const groqPrompt = `DOCUMENT:
 ${docTextParts}
 
@@ -2263,6 +2263,15 @@ General rules:
         notify("❌ Wrong password for Excel file. Please check and try again.", "error");
         return;
       }
+      if(err.message?.startsWith("XLSX_DECRYPT_FAILED:")){
+        const parts=err.message.split("::");
+        const xlsxName=parts[0].replace("XLSX_DECRYPT_FAILED:","");
+        setPwdError(xlsxName);
+        setStage("upload");
+        setParseLog("");
+        notify("❌ Cannot decrypt this Excel file — your bank uses an encryption format not supported by the browser. Use the workaround below.", "error");
+        return;
+      }
       setParseLog("Error: " + err.message);
       notify("Error: " + err.message, "error");
       setStage("error");
@@ -2503,6 +2512,43 @@ General rules:
               <button className="btn btn-primary" style={{width:"100%",marginTop:10,padding:"12px",fontSize:14}} onClick={parseDocuments}>
                 🤖 Analyse & Extract Financial Data
               </button>
+
+              {/* Workaround panel when Excel decryption fails */}
+              {files.some(f=>isXLSX(f)&&pwdError===f.name&&filePwds[f.name])&&(
+                <div style={{background:"#1a0a00",border:"1px solid #f59e0b44",borderRadius:10,padding:"14px",marginTop:12}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#fbbf24",marginBottom:8}}>
+                    ⚠ Browser cannot decrypt this bank's Excel format
+                  </div>
+                  <div style={{fontSize:11,color:"#888",marginBottom:10,lineHeight:1.8}}>
+                    Your password is correct but this bank uses Microsoft's proprietary encryption that browser-based apps cannot open. Use one of these workarounds:
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{background:"#052e16",borderRadius:8,padding:"10px 12px",border:"1px solid #16a34a22"}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#4ade80",marginBottom:4}}>✅ Option 1 (Easiest) — Remove password on your computer</div>
+                      <div style={{fontSize:11,color:"#666",lineHeight:1.7}}>
+                        1. Open the Excel file on your computer (Excel or Google Sheets)<br/>
+                        2. Enter the password when prompted<br/>
+                        3. File → Save As → Excel Workbook → <strong style={{color:"#aaa"}}>do NOT set a password</strong> → Save<br/>
+                        4. Upload the new unprotected file here
+                      </div>
+                    </div>
+                    <div style={{background:"#0a0a14",borderRadius:8,padding:"10px 12px",border:"1px solid #2a2a4a"}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:4}}>✅ Option 2 — Download as CSV instead</div>
+                      <div style={{fontSize:11,color:"#666",lineHeight:1.7}}>
+                        Most banks also offer CSV download which has no password.<br/>
+                        Go to your bank's portal → Statements → Download as <strong style={{color:"#aaa"}}>CSV</strong> → upload here.
+                      </div>
+                    </div>
+                    <div style={{background:"#0a0a14",borderRadius:8,padding:"10px 12px",border:"1px solid #2a2a4a"}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:4}}>✅ Option 3 — Use Smart SMS Analyser</div>
+                      <div style={{fontSize:11,color:"#666",lineHeight:1.7}}>
+                        Copy your bank SMS messages → Expenses tab → Smart SMS Analyser → paste → Extract.<br/>
+                        Works for transactions without needing any file.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
