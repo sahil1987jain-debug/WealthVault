@@ -1717,98 +1717,290 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
   const parseIndDate = s => {
     if(!s) return today();
     const str = String(s).trim();
+    // Already ISO format YYYY-MM-DD (IndusInd, some other banks)
+    if(/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
     // Excel serial date number
     if(/^\d{5}$/.test(str)){
       const d = new Date((parseInt(str)-25569)*86400000);
       return d.toISOString().split("T")[0];
     }
-    let m=str.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    let m=str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
     if(m){ const y=m[3].length===2?"20"+m[3]:m[3]; return `${y}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`; }
-    m=str.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
+    // YYYY/MM/DD
+    m=str.match(/^(\d{4})[\/\-](\d{2})[\/\-](\d{2})$/);
     if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+    // DD Mon YYYY (e.g. 01 Apr 2025)
+    const months={jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
+    m=str.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+    if(m) return `${m[3]}-${months[m[2].toLowerCase()]||"01"}-${m[1].padStart(2,"0")}`;
     return today();
   };
   const detectDocKind = (text, fname="") => {
     const t=text.toLowerCase(); const f=fname.toLowerCase();
     if(/cams|kfintech|karvy|consolidated account statement/i.test(t)) return "cas";
     if(/isin.*qty|qty.*isin|holding.*statement|demat|cdsl|nsdl|avg.*cost|current.*value.*exchange/i.test(t)) return "demat";
-    if(/folio.*no|nav.*units|scheme.*name|mutual fund/i.test(t)) return "mf";
-    if(/home loan|car loan|outstanding.*principal|emi.*schedule|loan account number/i.test(t)) return "loan";
-    if(/fixed deposit|fd.*certificate|maturity.*amount|deposit.*receipt/i.test(t)) return "fd";
-    if(/credit card|card.*statement|minimum.*due|total.*due/i.test(t)) return "cc";
+    if(/folio.*no|nav.*units|scheme.*name|mutual fund statement/i.test(t)) return "mf";
+    // Loan: must have BOTH loan type + outstanding/emi to avoid false positives
+    if(/(home loan|car loan|personal loan|loan account)/.test(t) && /(outstanding|emi schedule|principal balance)/.test(t)) return "loan";
+    if(/fixed deposit|fd.*certificate|maturity.*amount.*deposit|deposit.*receipt/i.test(t)) return "fd";
+    if(/credit card|card.*statement|minimum.*due|total.*due.*amount/i.test(t)) return "cc";
+    // Bank statement — broad catch for any tabular statement
     return "bank";
   };
 
   // Parse CSV/tabular text into array of row objects using header row
   const parseTabular = (text) => {
     const rows = text.split(/\n/).map(r=>r.trim()).filter(Boolean);
-    if(rows.length < 2) return {headers:[], data:[]};
-    // Find header row — first row with multiple columns and no big numbers
-    let headerIdx = 0;
-    for(let i=0; i<Math.min(10,rows.length); i++){
-      const cells = rows[i].split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,""));
-      if(cells.length >= 3 && cells.some(c=>/date|narr|desc|debit|credit|amount|balance|symbol|isin|folio|scheme/i.test(c))){
-        headerIdx = i; break;
-      }
+    if(rows.length < 2) return {headers:[], data:[], rawHeaders:""};
+
+    // Score each row for likelihood of being a header
+    // Scan ALL rows (up to 50) to handle banks with many metadata rows at top
+    const HEADER_KEYWORDS = [
+      "date","narration","description","particulars","debit","credit",
+      "balance","withdrawal","deposit","amount","transaction","remarks",
+      "reference","cheque","chq","ref","value date","txn","tran","dr","cr",
+      "particular","detail","narr","desc","beneficiary","mode"
+    ];
+
+    let bestIdx = 0;
+    let bestScore = -1;
+    for(let i=0; i<Math.min(50,rows.length); i++){
+      const cells = rows[i].split(/,|\t/).map(c=>c.trim().replace(/^["']+|["']+$/g,""));
+      if(cells.length < 3) continue;
+      const joined = cells.join(" ").toLowerCase();
+      // Score: count how many header keywords appear
+      let score = 0;
+      HEADER_KEYWORDS.forEach(kw=>{ if(joined.includes(kw)) score++; });
+      // Bonus: more columns = more likely a header
+      if(cells.length >= 5) score += 1;
+      if(cells.length >= 7) score += 1;
+      // Penalty: if row has big numbers it's probably data not header
+      const hasNumbers = cells.some(c=>/^\d{4,}/.test(c.replace(/,/g,"")));
+      if(hasNumbers) score -= 3;
+      if(score > bestScore){ bestScore=score; bestIdx=i; }
     }
-    const headers = rows[headerIdx].split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,"").toLowerCase());
+
+    // Only use detected header if score > 0, otherwise fall back to row 0
+    const headerIdx = bestScore > 0 ? bestIdx : 0;
+    const rawHeaders = rows[headerIdx];
+    const headers = rows[headerIdx].split(/,|\t/)
+      .map(c=>c.trim().replace(/^["']+|["']+$/g,"").toLowerCase().replace(/\s+/g," "));
     const data = rows.slice(headerIdx+1).map(row=>{
-      const cells = row.split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,""));
+      const cells = row.split(/,|\t/).map(c=>c.trim().replace(/^["']+|["']+$/g,""));
       const obj={};
       headers.forEach((h,i)=>{ obj[h]=cells[i]||""; });
       obj._raw = row;
       return obj;
     }).filter(r=>Object.values(r).some(v=>v&&v!==""));
-    return {headers, data};
+    return {headers, data, rawHeaders};
   };
 
   // Find column by multiple possible names
+  // Find column by name — exact match first, then word-boundary partial match
+  // Word-boundary prevents "cr" matching "description", "dep" matching "type" etc.
   const findCol = (obj, ...names) => {
-    const keys = Object.keys(obj);
+    const keys = Object.keys(obj).filter(k=>k!=='_raw');
     for(const name of names){
-      const k = keys.find(k=>k.toLowerCase().includes(name.toLowerCase()));
-      if(k && obj[k]!==undefined && obj[k]!=="") return obj[k];
+      const nl = name.toLowerCase();
+      // 1. Exact full match
+      const exact = keys.find(k=>k.toLowerCase()===nl);
+      if(exact && obj[exact]!==undefined && obj[exact]!=="") return obj[exact];
+      // 2. Word-boundary partial: nl must appear at start/end or surrounded by space/(
+      // Requires 3+ char search term to avoid ambiguity
+      if(nl.length >= 3){
+        const k = keys.find(k=>{
+          const kl = k.toLowerCase();
+          return kl.startsWith(nl) || kl.endsWith(nl) ||
+                 kl.includes(" "+nl) || kl.includes(nl+" ") ||
+                 kl.includes("("+nl+")") || kl.includes("/"+nl);
+        });
+        if(k && obj[k]!==undefined && obj[k]!=="") return obj[k];
+      }
     }
     return "";
   };
 
   const parseBankCSV = (text) => {
+    // ── Known column formats for 8 Indian banks ────────────────────────────
+    // HDFC:     Date | Narration | Value Dt | Debit Amt | Credit Amt | Chq/Ref Number | Closing Balance
+    // ICICI:    Transaction Date | Value Date | Transaction ID | Remarks | Debit | Credit | Balance (INR)
+    //           OR: S No. | Value Date | Transaction Date | Cheque Number | Transaction Remarks | Amount (INR) | Dr/Cr | Balance (INR)
+    // SBI:      Txn Date | Value Date | Description | Ref No./Cheque No. | Debit | Credit | Balance
+    // Axis:     Tran Date | PARTICULARS | Chq./Ref.No. | Value Date | Withdrawal Amt.(INR) | Deposit Amt.(INR) | Closing Balance (INR)
+    // Kotak:    Transaction Date | Description | Chq/Ref Number | Debit | Credit | Balance
+    // IndusInd: Transaction Date | Value Date | Particulars | Cheque/Ref No. | Debit Amount | Credit Amount | Balance
+    // Yes Bank: Date | Transaction Particulars | Ref No./Cheque No./DD No. | Debit | Credit | Balance
+    // Canara:   Transaction Date | Value Date | Narration | Ref No./Cheque No | Debit | Credit | Balance
+    // IDBI:     Transaction Date | Value Date | Particulars | Cheque/Ref No | Debit | Credit | Balance
+    // Bank of India: Date | Particulars | Chq/Ref No | Debit | Credit | Balance
+
     const expenses=[], income=[];
-    let bankName="", acNo="", closingBal=null;
-    if(/HDFC/i.test(text)) bankName="HDFC Bank";
-    else if(/ICICI/i.test(text)) bankName="ICICI Bank";
-    else if(/SBI|State Bank/i.test(text)) bankName="SBI";
-    else if(/Axis/i.test(text)) bankName="Axis Bank";
-    else if(/Kotak/i.test(text)) bankName="Kotak";
-    else if(/IndusInd/i.test(text)) bankName="IndusInd";
-    else if(/Yes Bank/i.test(text)) bankName="Yes Bank";
+    let bankName="", acNo="", closingBal=null, detectedHeaders="";
+
+    if(/HDFC/i.test(text))                  bankName="HDFC Bank";
+    else if(/ICICI/i.test(text))            bankName="ICICI Bank";
+    else if(/SBI|State Bank of India/i.test(text)) bankName="SBI";
+    else if(/Axis Bank/i.test(text))        bankName="Axis Bank";
+    else if(/Kotak/i.test(text))            bankName="Kotak Bank";
+    else if(/IndusInd|Indus Ind/i.test(text)) bankName="IndusInd Bank";
+    else if(/Yes Bank/i.test(text))         bankName="Yes Bank";
+    else if(/Canara/i.test(text))           bankName="Canara Bank";
+    else if(/IDBI/i.test(text))             bankName="IDBI Bank";
+    else if(/Bank of India/i.test(text))    bankName="Bank of India";
+    else if(/Punjab|PNB/i.test(text))       bankName="PNB";
+    else if(/Union Bank/i.test(text))       bankName="Union Bank";
+    else if(/Bank of Baroda|BOB/i.test(text)) bankName="Bank of Baroda";
+    else if(/Central Bank/i.test(text))     bankName="Central Bank";
+
     const acM=text.match(/(?:A\/c|Account|Acct)[.\s#:]*(?:No\.?)?[:\s]*([X\d]{4,20})/i);
     if(acM) acNo=acM[1].slice(-4);
 
-    const {headers, data} = parseTabular(text);
-    if(data.length > 0){
-      // Column-based parsing (Excel/CSV with headers)
+    const {headers, data, rawHeaders} = parseTabular(text);
+    detectedHeaders = rawHeaders||"";
+
+    if(data.length>0 && headers.length>=3){
       data.forEach(row=>{
-        const date  = parseIndDate(findCol(row,"date","txn date","transaction date","value date")||"");
-        const narr  = findCol(row,"narration","description","particulars","remarks","detail","memo")||"";
-        const debit = parseAmtStr(findCol(row,"debit","withdrawal","dr amount","debit amount","amount dr"));
-        const credit= parseAmtStr(findCol(row,"credit","deposit","cr amount","credit amount","amount cr"));
-        const bal   = parseAmtStr(findCol(row,"balance","closing","available"));
-        if(bal>0) closingBal=bal;
-        const name  = narr.replace(/\s+/g," ").trim().slice(0,50) || (debit>0?"Bank Debit":"Bank Credit");
-        if(debit>0){
-          expenses.push({id:"tmp_"+Math.random().toString(36).slice(2),
-            category:guessCategory(name),name,amount:debit,date,type:"Variable",confidence:"high"});
+        // ── DATE (all banks) ──────────────────────────────────────────────
+        const dateVal = findCol(row,
+          // Standard
+          "date",
+          // HDFC, ICICI, IndusInd, Kotak, Canara, IDBI, BOI
+          "transaction date",
+          // SBI, Axis, Canara, IDBI
+          "txn date","tran date","trans date","posting date",
+          // ICICI, SBI, Canara, IDBI
+          "value date",
+          // fallback
+          "trans. date","trn date"
+        );
+        const date = parseIndDate(dateVal||"");
+
+        // ── NARRATION (all banks) ─────────────────────────────────────────
+        const narr = findCol(row,
+          // HDFC, ICICI, SBI
+          "narration","description","remarks",
+          // IndusInd, Yes Bank, Axis, IDBI, BOI, Canara
+          "particulars","transaction particulars","trans particular",
+          // ICICI
+          "transaction remarks","trans remarks",
+          // others
+          "detail","memo","transaction detail","trans desc","beneficiary",
+          "trans narration","chq remarks","transaction narration",
+          "transaction description"
+        )||"";
+
+        // ── DEBIT (all banks) ─────────────────────────────────────────────
+        const debit = parseAmtStr(findCol(row,
+          // HDFC
+          "debit amt",
+          // IndusInd, ICICI, IDBI, Canara, BOI
+          "debit amount","debit",
+          // Axis
+          "withdrawal amt.(inr)","withdrawal amt","withdrawal amount","withdrawal",
+          // HDFC
+          "chq/ref number debit",
+          // generic
+          "dr amount","wdl amount","wdl","amount dr","debit(inr)","debit (inr)"
+        ));
+
+        // ── CREDIT (all banks) ────────────────────────────────────────────
+        const credit = parseAmtStr(findCol(row,
+          // HDFC
+          "credit amt",
+          // IndusInd, ICICI, IDBI, Canara, BOI
+          "credit amount","credit",
+          // Axis
+          "deposit amt.(inr)","deposit amt","deposit amount","deposit",
+          // generic
+          "cr amount","dep amount","dep","amount cr","credit(inr)","credit (inr)"
+        ));
+
+        // ── SINGLE AMOUNT + DR/CR INDICATOR (ICICI format) ───────────────
+        // Also handles IndusInd "Type" column = "Transfer Debit"/"Transfer Credit"
+        let singleAmt=0, singleIsDebit=false, singleIsCredit=false;
+        if(!debit && !credit){
+          const amtV  = findCol(row,
+            "amount (inr)","amount(inr)","amount","transaction amount",
+            "trans amount","tran amount","inr amount"
+          );
+          // IndusInd uses "Type" column with "Transfer Debit"/"Transfer Credit"
+          const drcrV = findCol(row,
+            "dr/cr","cr/dr","type","transaction type","mode","dr cr","crdr"
+          );
+          singleAmt = parseAmtStr(amtV);
+          singleIsDebit  = /debit|transfer debit|dr|withdrawal|w\b/i.test((drcrV||"").trim());
+          singleIsCredit = /credit|transfer credit|cr|deposit/i.test((drcrV||"").trim());
+          if(singleAmt && !singleIsDebit && !singleIsCredit){
+            if(String(amtV||"").trim().startsWith("-")) singleIsDebit=true;
+            else singleIsCredit=true;
+          }
         }
-        if(credit>0){
+
+        // ── IndusInd: use "Type" column even when Debit/Credit columns exist ─
+        // Because IndusInd sometimes has Debit=10 AND Credit='' for a debit row,
+        // but we still want to use Type for confirmation
+        if(!debit && !credit && !singleAmt){
+          // Try "Type" column to determine direction, use balance diff as amount
+          const typeV = findCol(row,"type","transaction type");
+          if(typeV && closingBal!==null){
+            const bal2 = parseAmtStr(findCol(row,"balance","bal"));
+            const diff = Math.abs(closingBal - bal2);
+            if(diff > 0.1 && diff < 500000){
+              singleAmt = diff;
+              singleIsDebit  = /debit/i.test(typeV);
+              singleIsCredit = /credit/i.test(typeV);
+              closingBal = bal2||closingBal;
+            }
+          }
+        }
+
+        // ── BALANCE ───────────────────────────────────────────────────────
+        const bal = parseAmtStr(findCol(row,
+          "balance","closing balance","running balance","available balance",
+          "bal","closing bal","closing balance (inr)","balance (inr)"
+        ));
+        if(bal>0) closingBal=bal;
+
+        const name = (()=>{
+          let n = narr.replace(/\s+/g," ").trim();
+          // Clean UPI format: UPI/REFNO/DR/NAME/BANK/VPA → extract NAME part
+          const upiM = n.match(/UPI\/\d+\/(DR|CR)\/([A-Z][A-Za-z\s]{1,20})\//i);
+          if(upiM) n = upiM[2].trim();
+          // Clean: remove pure numeric sequences >8 digits from start
+          n = n.replace(/^\d{8,}\s*[:/]?\s*/,"");
+          return n.slice(0,60) || (narr.slice(0,30));
+        })();
+        if(!name && !debit && !credit && !singleAmt) return;
+
+        if(debit>1){
+          expenses.push({id:"tmp_"+Math.random().toString(36).slice(2),
+            category:guessCategory(name),name:name||"Bank Debit",
+            amount:debit,date,type:"Variable",confidence:"high"});
+        }
+        if(credit>1){
           income.push({id:"tmp_"+Math.random().toString(36).slice(2),
-            source:"Other",name,amount:credit,date,frequency:"One-time",confidence:"high"});
+            source:"Other",name:name||"Bank Credit",
+            amount:credit,date,frequency:"One-time",taxable:true,confidence:"high"});
+        }
+        if(singleAmt>1){
+          if(singleIsDebit)
+            expenses.push({id:"tmp_"+Math.random().toString(36).slice(2),
+              category:guessCategory(name),name:name||"Bank Debit",
+              amount:singleAmt,date,type:"Variable",confidence:"high"});
+          else
+            income.push({id:"tmp_"+Math.random().toString(36).slice(2),
+              source:"Other",name:name||"Bank Credit",
+              amount:singleAmt,date,frequency:"One-time",taxable:true,confidence:"high"});
         }
       });
-    } else {
-      // Fallback: line-by-line for unstructured text
+    }
+
+    // ── FALLBACK: line-by-line regex ──────────────────────────────────────
+    if(!expenses.length && !income.length){
       text.split(/\n/).filter(l=>l.trim().length>10).forEach(line=>{
-        const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)||line.match(/([\d,]{4,}\.?\d{0,2})\s*(Dr|Cr)/i);
+        const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)
+                   ||line.match(/([\d,]{4,}\.?\d{0,2})\s*(Dr|Cr)\b/i);
         if(!amtM) return;
         const amount=parseAmtStr(amtM[1]);
         if(!amount||amount<1) return;
@@ -1817,12 +2009,18 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
         if(!isDebit&&!isCredit) return;
         const dateM=line.match(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/);
         const date=dateM?parseIndDate(dateM[0]):today();
-        let name=line.replace(/(?:INR|Rs\.?|₹)\s*[\d,]+\.?\d*/gi,"").replace(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/g,"").replace(/\b(Dr|Cr)\b/gi,"").replace(/\s+/g," ").trim().slice(0,50)||(isDebit?"Bank Debit":"Bank Credit");
+        const name=line
+          .replace(/(?:INR|Rs\.?|₹)\s*[\d,]+\.?\d*/gi,"")
+          .replace(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/g,"")
+          .replace(/\b(Dr|Cr)\b/gi,"")
+          .replace(/\s+/g," ").trim().slice(0,50)
+          ||(isDebit?"Bank Debit":"Bank Credit");
         (isDebit?expenses:income).push({id:"tmp_"+Math.random().toString(36).slice(2),
-          category:isDebit?guessCategory(name):"Other Income",name,amount,date,type:"Variable",confidence:"medium"});
+          category:isDebit?guessCategory(name):"Other Income",
+          name,amount,date,type:"Variable",confidence:"medium"});
       });
     }
-    return {expenses,income,bankName,acNo,closingBal};
+    return {expenses,income,bankName,acNo,closingBal,detectedHeaders};
   };
 
   const parseDematCSV = (text) => {
@@ -1963,6 +2161,13 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
         const r=parseBankCSV(text);
         result.expenses=r.expenses; result.income=r.income;
         result.documentSummary=`${r.expenses.length} expenses, ${r.income.length} credits${r.bankName?" — "+r.bankName:""}`;
+        result._detectedHeaders = r.detectedHeaders||"";
+        result._bankName = r.bankName||"";
+        // Capture first 3 data rows for debug
+        try{
+          const {data:dbgRows} = parseTabular(text);
+          result._firstRows = dbgRows.slice(0,3).map(r=>Object.values(r).filter((_,i)=>i<8).join(" | ")).join("\n");
+        }catch(e){}
         if(r.closingBal&&r.acNo) result.assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
           category:"Bank Savings",name:`${r.bankName||"Bank"} XXXX${r.acNo}`,
           value:r.closingBal,confidence:"high"});
@@ -2353,48 +2558,43 @@ General rules:
         setParseLog("CAS regex found nothing — trying AI…");
       }
 
-      // ── Try Zero-AI local parser first for text-based files ─────────────────
-      // If no API key, or file is CSV/Excel (text already extracted), try local parser
-      const hasTextFiles = contentParts.some(p=>p.type==="text"&&p.text.length>100);
+      // ── Zero-AI local parser for CSV/Excel files ─────────────────────────────
+      // Check file types BEFORE the prompt text was added to contentParts
+      const isExcelOrCSV = files.every(f => isXLSX(f) || isCSV(f));
       const hasOnlyTextFiles = contentParts.every(p=>p.type==="text");
       const localText = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n");
 
-      if(hasOnlyTextFiles || !apiKey?.trim()){
+      // For CSV/Excel: always use local parser, never send to AI
+      if(isExcelOrCSV || (!apiKey?.trim() && hasOnlyTextFiles)){
         setParseLog("Parsing document locally (no AI needed)…");
         const localResult = parseWithoutAI(localText, files[0]?.name||"", docType);
         const totalFound = localResult.assets.length + localResult.liabilities.length +
                           localResult.income.length + localResult.expenses.length;
-
-        // Always show results if no API key, OR if we found something
-        if(totalFound > 0 || !apiKey?.trim()){
-          const withIds = obj => {
-            const o={...obj, id:obj.id||"tmp_"+Math.random().toString(36).slice(2)};
-            ["value","qty","buyPrice","units","nav","invested","intRate","cover","premium","amount","origAmt","emi"]
-              .forEach(k=>{ if(o[k]!==undefined) o[k]=parseFloat(o[k])||0; });
-            return o;
-          };
-          localResult.assets     = (localResult.assets||[]).map(withIds);
-          localResult.liabilities= (localResult.liabilities||[]).map(withIds);
-          localResult.income     = (localResult.income||[]).map(withIds);
-          localResult.expenses   = (localResult.expenses||[]).map(withIds);
-          localResult.insurance  = (localResult.insurance||[]).map(withIds);
-          const sel={};
-          [...localResult.assets,...localResult.liabilities,...localResult.income,...localResult.expenses]
-            .forEach(i=>{ if(i.confidence!=="low") sel[i.id]=true; });
-          setParsed(localResult); setSelected(sel); setStage("review"); setParseLog("");
-          notify(totalFound>0
-            ? `✓ Found ${totalFound} entries — review and add to your data`
-            : `⚠ 0 entries found — try selecting the correct Document Type above, or export as CSV from your bank`
-          );
-          setParsing(false); return;
-        }
-        // Has API key and local found nothing — try AI
-        setParseLog("Local parser found nothing — sending to AI…");
+        const withIds = obj => {
+          const o={...obj, id:obj.id||"tmp_"+Math.random().toString(36).slice(2)};
+          ["value","qty","buyPrice","units","nav","invested","intRate","cover","premium","amount","origAmt","emi"]
+            .forEach(k=>{ if(o[k]!==undefined) o[k]=parseFloat(o[k])||0; });
+          return o;
+        };
+        localResult.assets     = (localResult.assets||[]).map(withIds);
+        localResult.liabilities= (localResult.liabilities||[]).map(withIds);
+        localResult.income     = (localResult.income||[]).map(withIds);
+        localResult.expenses   = (localResult.expenses||[]).map(withIds);
+        localResult.insurance  = (localResult.insurance||[]).map(withIds);
+        const sel={};
+        [...localResult.assets,...localResult.liabilities,...localResult.income,...localResult.expenses]
+          .forEach(i=>{ if(i.confidence!=="low") sel[i.id]=true; });
+        setParsed(localResult); setSelected(sel); setStage("review"); setParseLog("");
+        notify(totalFound>0
+          ? `✓ Found ${totalFound} entries — review and confirm to import`
+          : `⚠ 0 entries found. Detected columns: "${localResult._detectedHeaders||"(none detected)"}". Select correct Document Type above, or check that your file has Date/Debit/Credit columns.`
+        );
+        setParsing(false); return;
       }
 
-      // ── AI parsing (for PDFs, images, or when local parser found nothing) ───
+      // ── AI parsing — for PDFs and images only ────────────────────────────────
       if(!apiKey?.trim()){
-        notify("No API key set. Upload a CSV or Excel file — those work without AI. Go to Profile to add a Groq/Claude key for PDF support.", "error");
+        notify("No API key — upload a CSV or Excel file for no-AI parsing, or add a Groq key in Profile for PDF support.", "error");
         setStage("upload"); setParsing(false); return;
       }
 
@@ -2953,7 +3153,41 @@ General rules:
       {/* Review Stage */}
       {stage==="review"&&parsed&&(
         <div>
-          {/* Summary banner */}
+          {/* 0 entries debug panel */}
+          {totalItems===0&&(
+            <div style={{background:"#0a0a14",border:"1px solid #f59e0b44",borderRadius:14,padding:16,marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#fbbf24",marginBottom:10}}>⚠ 0 entries found — Debug Info</div>
+              <div style={{fontSize:11,color:"#888",marginBottom:8}}>The file was read successfully but no transactions were extracted. Here's what was detected:</div>
+              <div style={{background:"#060610",borderRadius:8,padding:"10px 12px",marginBottom:10,fontFamily:"'DM Mono',monospace",fontSize:10,color:"#60a5fa",wordBreak:"break-all",lineHeight:1.8}}>
+                <div style={{color:"#a78bfa",marginBottom:4}}>DETECTED HEADER ROW:</div>
+                <div style={{color:"#fbbf24"}}>{parsed._detectedHeaders||"(no header detected)"}</div>
+                <div style={{color:"#a78bfa",marginTop:8,marginBottom:4}}>BANK DETECTED: <span style={{color:"#4ade80"}}>{parsed._bankName||"(not identified)"}</span></div>
+                <div style={{color:"#a78bfa",marginTop:4,marginBottom:4}}>DOC TYPE: <span style={{color:"#4ade80"}}>{parsed.documentType||"auto"}</span></div>
+                {parsed._firstRows&&<>
+                  <div style={{color:"#a78bfa",marginTop:8,marginBottom:4}}>FIRST 3 DATA ROWS:</div>
+                  <div style={{color:"#888",whiteSpace:"pre-wrap"}}>{parsed._firstRows}</div>
+                </>}
+              </div>
+              <div style={{fontSize:11,color:"#666",marginBottom:10,lineHeight:1.8}}>
+                📋 Copy the <span style={{color:"#fbbf24"}}>DETECTED HEADER ROW</span> above and share it — we'll fix the column mapping immediately.<br/>
+                Or try these quick fixes:
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <div style={{background:"#0a1020",borderRadius:8,padding:"8px 12px",fontSize:11,color:"#888"}}>
+                  1. Select the correct <strong style={{color:"#aaa"}}>Document Type</strong> above (Bank Statement / Demat / MF etc.)
+                </div>
+                <div style={{background:"#0a1020",borderRadius:8,padding:"8px 12px",fontSize:11,color:"#888"}}>
+                  2. Open file in Excel → check column names → first row should have Date, Description, Debit, Credit
+                </div>
+                <div style={{background:"#0a1020",borderRadius:8,padding:"8px 12px",fontSize:11,color:"#888"}}>
+                  3. If bank uses <strong style={{color:"#aaa"}}>regional language</strong> in column headers → re-download statement selecting English
+                </div>
+                <div style={{background:"#0a1020",borderRadius:8,padding:"8px 12px",fontSize:11,color:"#888"}}>
+                  4. Try <strong style={{color:"#aaa"}}>CSV format</strong> instead of Excel if you downloaded Excel — CSV is more reliable
+                </div>
+              </div>
+            </div>
+          )}
           <div style={{background:"linear-gradient(135deg,#0d1a0d,#0d0d2e)",border:"1px solid #2a4a2a",borderRadius:16,padding:20,marginBottom:20}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
               <div>
