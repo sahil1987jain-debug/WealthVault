@@ -1750,53 +1750,110 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
   };
 
   // Parse CSV/tabular text into array of row objects using header row
-  const parseTabular = (text) => {
-    const rows = text.split(/\n/).map(r=>r.trim()).filter(Boolean);
-    if(rows.length < 2) return {headers:[], data:[], rawHeaders:""};
+  // Proper CSV row splitter — handles quoted fields with commas inside
+  // e.g. "NG TIVOLI, B WING, FLAT 501" stays as one cell
+  const splitCSVRow = (row) => {
+    const cells = []; let cur = "", inQ = false;
+    for(let i=0; i<row.length; i++){
+      const ch = row[i];
+      if(ch==='"'&&!inQ){ inQ=true; continue; }
+      if(ch==='"'&&inQ){ if(row[i+1]==='"'){cur+='"';i++;}else inQ=false; continue; }
+      if((ch===','||ch==='\t')&&!inQ){ cells.push(cur.trim()); cur=""; continue; }
+      cur+=ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  };
 
-    // Score each row for likelihood of being a header
-    // Scan ALL rows (up to 50) to handle banks with many metadata rows at top
+  // Parse directly from XLSX sheet_to_json rows (no CSV conversion needed)
+  // This is the most reliable method — bypasses all CSV quoting issues
+  const parseTabularFromJSON = (jsonRows) => {
+    if(!jsonRows||jsonRows.length<2) return {headers:[], data:[], rawHeaders:""};
+    console.log("[WV] parseTabularFromJSON: total rows=", jsonRows.length, "first row=", jsonRows[0]);
+
     const HEADER_KEYWORDS = [
       "date","narration","description","particulars","debit","credit",
       "balance","withdrawal","deposit","amount","transaction","remarks",
-      "reference","cheque","chq","ref","value date","txn","tran","dr","cr",
-      "particular","detail","narr","desc","beneficiary","mode"
+      "reference","cheque","chq","txn","tran","particular","narr",
+      "beneficiary","sr.no","slno","sno","s.no","serial","type"
     ];
 
-    let bestIdx = 0;
-    let bestScore = -1;
-    for(let i=0; i<Math.min(50,rows.length); i++){
-      const cells = rows[i].split(/,|\t/).map(c=>c.trim().replace(/^["']+|["']+$/g,""));
-      if(cells.length < 3) continue;
-      const joined = cells.join(" ").toLowerCase();
-      // Score: count how many header keywords appear
+    let bestIdx = 0, bestScore = -1;
+    for(let i=0; i<Math.min(60,jsonRows.length); i++){
+      const cells = jsonRows[i].map(v=>String(v||""));
+      const nonEmpty = cells.filter(c=>c.trim());
+      if(nonEmpty.length < 3) continue;
+      const joined = nonEmpty.join(" ").toLowerCase();
       let score = 0;
       HEADER_KEYWORDS.forEach(kw=>{ if(joined.includes(kw)) score++; });
-      // Bonus: more columns = more likely a header
-      if(cells.length >= 5) score += 1;
-      if(cells.length >= 7) score += 1;
-      // Penalty: if row has big numbers it's probably data not header
-      const hasNumbers = cells.some(c=>/^\d{4,}/.test(c.replace(/,/g,"")));
-      if(hasNumbers) score -= 3;
+      if(nonEmpty.length >= 4) score += 2;
+      if(nonEmpty.length >= 6) score += 2;
+      // Penalty: big standalone numbers = data row
+      if(cells.some(c=>{ const n=String(c).replace(/[,. ]/g,""); return /^\d{6,}$/.test(n); })) score -= 5;
+      // Penalty: very long cell = address/metadata
+      if(cells.some(c=>String(c).length>60)) score -= 3;
       if(score > bestScore){ bestScore=score; bestIdx=i; }
     }
 
-    // Only use detected header if score > 0, otherwise fall back to row 0
-    const headerIdx = bestScore > 0 ? bestIdx : 0;
-    const rawHeaders = rows[headerIdx];
-    const headers = rows[headerIdx].split(/,|\t/)
-      .map(c=>c.trim().replace(/^["']+|["']+$/g,"").toLowerCase().replace(/\s+/g," "));
-    const data = rows.slice(headerIdx+1).map(row=>{
-      const cells = row.split(/,|\t/).map(c=>c.trim().replace(/^["']+|["']+$/g,""));
+    const headerRow = jsonRows[bestIdx].map(v=>String(v||"").toLowerCase().trim().replace(/\s+/g," "));
+    const rawHeaders = jsonRows[bestIdx].map(v=>String(v||"")).join(",");
+
+    const data = jsonRows.slice(bestIdx+1).map(cells=>{
       const obj={};
-      headers.forEach((h,i)=>{ obj[h]=cells[i]||""; });
-      obj._raw = row;
+      headerRow.forEach((h,i)=>{ if(h) obj[h]=String(cells[i]===undefined||cells[i]===null?"":cells[i]); });
+      obj._raw = cells.join(",");
       return obj;
     }).filter(r=>Object.values(r).some(v=>v&&v!==""));
+
+    return {headers:headerRow, data, rawHeaders};
+  };
+
+  const parseTabular = (text) => {
+    const rawRows = text.split(/\n/).map(r=>r.trim()).filter(Boolean);
+    if(rawRows.length < 2) return {headers:[], data:[], rawHeaders:""};
+
+    // Parse all rows properly (handles quoted commas in address fields etc.)
+    const parsedRows = rawRows.map(r=>splitCSVRow(r));
+
+    // Score each row for likelihood of being a transaction header row
+    const HEADER_KEYWORDS = [
+      "date","narration","description","particulars","debit","credit",
+      "balance","withdrawal","deposit","amount","transaction","remarks",
+      "reference","cheque","chq","txn","tran","particular","narr",
+      "beneficiary","sr.no","slno","sno","s.no","serial"
+    ];
+
+    let bestIdx = 0, bestScore = -1;
+    for(let i=0; i<Math.min(60,parsedRows.length); i++){
+      const cells = parsedRows[i];
+      const nonEmpty = cells.filter(c=>c.trim());
+      if(nonEmpty.length < 3) continue;
+      const joined = nonEmpty.join(" ").toLowerCase();
+      let score = 0;
+      HEADER_KEYWORDS.forEach(kw=>{ if(joined.includes(kw)) score++; });
+      if(nonEmpty.length >= 4) score += 2;
+      if(nonEmpty.length >= 6) score += 2;
+      // Penalty: big standalone numbers = data row
+      if(cells.some(c=>/^\d{5,}$/.test(c.replace(/[,. ]/g,"")))) score -= 5;
+      // Penalty: very long text cell = address/metadata row
+      if(cells.some(c=>c.length>60)) score -= 3;
+      if(score > bestScore){ bestScore=score; bestIdx=i; }
+    }
+
+    const headerIdx = bestScore > 0 ? bestIdx : 0;
+    const rawHeaders = rawRows[headerIdx];
+    const headers = parsedRows[headerIdx].map(c=>c.toLowerCase().replace(/\s+/g," ").trim());
+
+    const data = parsedRows.slice(headerIdx+1).map((cells,ri)=>{
+      const obj={};
+      headers.forEach((h,i)=>{ obj[h]=cells[i]||""; });
+      obj._raw = rawRows[headerIdx+1+ri]||"";
+      return obj;
+    }).filter(r=>Object.values(r).some(v=>v&&v!==""));
+
     return {headers, data, rawHeaders};
   };
 
-  // Find column by multiple possible names
   // Find column by name — exact match first, then word-boundary partial match
   // Word-boundary prevents "cr" matching "description", "dep" matching "type" etc.
   const findCol = (obj, ...names) => {
@@ -1821,7 +1878,7 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     return "";
   };
 
-  const parseBankCSV = (text) => {
+  const parseBankCSV = (text, xlsxRows=null) => {
     // ── Known column formats for 8 Indian banks ────────────────────────────
     // HDFC:     Date | Narration | Value Dt | Debit Amt | Credit Amt | Chq/Ref Number | Closing Balance
     // ICICI:    Transaction Date | Value Date | Transaction ID | Remarks | Debit | Credit | Balance (INR)
@@ -1856,7 +1913,9 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     const acM=text.match(/(?:A\/c|Account|Acct)[.\s#:]*(?:No\.?)?[:\s]*([X\d]{4,20})/i);
     if(acM) acNo=acM[1].slice(-4);
 
-    const {headers, data, rawHeaders} = parseTabular(text);
+    const {headers, data, rawHeaders} = xlsxRows
+      ? parseTabularFromJSON(xlsxRows)
+      : parseTabular(text);
     detectedHeaders = rawHeaders||"";
 
     if(data.length>0 && headers.length>=3){
@@ -2139,8 +2198,22 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     return assets;
   };
 
-  const parseWithoutAI = (text, filename, docTypeHint) => {
-    const kind = docTypeHint==="auto" ? detectDocKind(text,filename) : docTypeHint;
+  const parseWithoutAI = (text, filename, docTypeHint, xlsxRows=null) => {
+    // When we have raw JSON rows, detect doc type from actual column headers
+    // — much more reliable than scanning the whole text for keywords
+    let kind = docTypeHint==="auto" ? detectDocKind(text,filename) : docTypeHint;
+    if(xlsxRows && xlsxRows.length>1 && (docTypeHint==="auto" || kind==="loan")){
+      // Find the header row from JSON and check column names
+      const {headers} = parseTabularFromJSON(xlsxRows);
+      const h = headers.join(" ").toLowerCase();
+      if(/debit|credit|withdrawal|deposit/.test(h) && /date/.test(h)){
+        kind = "bank"; // Has debit/credit + date = definitely a bank statement
+      } else if(/isin|qty|quantity|avg.*cost|ltp/.test(h)){
+        kind = "demat";
+      } else if(/nav|units|folio|scheme/.test(h)){
+        kind = "mf";
+      }
+    }
     const result={assets:[],liabilities:[],income:[],expenses:[],insurance:[],
       documentType:kind,documentSummary:"",_parsedBy:"local"};
     try{
@@ -2158,7 +2231,7 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
         result.assets=parseFDCSV(text);
         result.documentSummary="FD certificate";
       } else {
-        const r=parseBankCSV(text);
+        const r=parseBankCSV(text, xlsxRows);
         result.expenses=r.expenses; result.income=r.income;
         result.documentSummary=`${r.expenses.length} expenses, ${r.income.length} credits${r.bankName?" — "+r.bankName:""}`;
         result._detectedHeaders = r.detectedHeaders||"";
@@ -2372,10 +2445,35 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
             contentParts.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});
           }
         } else if(isXLSX(file)){
-          setParseLog(`Converting Excel file: ${file.name}...`);
+          setParseLog(`Reading Excel file: ${file.name}...`);
           const pwd=filePwds[file.name]||"";
-          const text=await readXLSXasText(file, pwd);
-          contentParts.push({type:"text",text:`EXCEL FILE: ${file.name}\n\n${text}`});
+          // Read file once, get both text (for AI) and JSON rows (for local parser)
+          let XLSX3;
+          try{ XLSX3 = await window.waitForXLSX(); }catch(e){ throw new Error("SheetJS not loaded — refresh page"); }
+          const buf3 = await readFileAsArrayBuffer(file);
+          const opts3={type:"array"};
+          if(pwd) opts3.password=pwd;
+          let wb3;
+          try{ wb3=XLSX3.read(buf3,opts3); }
+          catch(e){
+            const m=(e.message||"").toLowerCase();
+            if(!pwd&&(m.includes("password")||m.includes("encrypt")||m.includes("cfb")))
+              throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
+            if(pwd) throw new Error("XLSX_DECRYPT_FAILED:"+file.name+"::"+e.message);
+            throw e;
+          }
+          // Get raw JSON rows (no CSV quoting issues) — primary for local parser
+          const sheetName3 = wb3.SheetNames[0];
+          const ws3 = wb3.Sheets[sheetName3];
+          const jsonRows3 = XLSX3.utils.sheet_to_json(ws3,{header:1,defval:"",blankrows:false});
+          // Also get CSV text for AI fallback
+          let csvText3 = `Filename: ${file.name}\n\n`;
+          wb3.SheetNames.forEach(sn=>{
+            const csv=XLSX3.utils.sheet_to_csv(wb3.Sheets[sn],{blankrows:false});
+            const clean=csv.split("\n").filter(r=>r.replace(/,/g,"").trim()).join("\n");
+            if(clean) csvText3+=`--- Sheet: ${sn} ---\n${clean.slice(0,40000)}\n\n`;
+          });
+          contentParts.push({type:"text",text:csvText3,_xlsxRows:jsonRows3,_fileName:file.name});
         } else {
           const text=await readFileAsText(file);
           const trimmed=text.length>80000?text.slice(0,80000)+"\n[truncated]":text;
@@ -2567,7 +2665,12 @@ General rules:
       // For CSV/Excel: always use local parser, never send to AI
       if(isExcelOrCSV || (!apiKey?.trim() && hasOnlyTextFiles)){
         setParseLog("Parsing document locally (no AI needed)…");
-        const localResult = parseWithoutAI(localText, files[0]?.name||"", docType);
+        // Extract raw JSON rows from Excel if available (bypasses CSV parsing issues)
+        const xlsxJsonRows = contentParts.find(p=>p._xlsxRows)?._xlsxRows||null;
+        console.log('[WV] xlsxJsonRows available:', !!xlsxJsonRows, xlsxJsonRows?xlsxJsonRows.length+' rows':null);
+        console.log('[WV] docType:', docType, 'files:', files.map(f=>f.name));
+        const localResult = parseWithoutAI(localText, files[0]?.name||"", docType, xlsxJsonRows);
+        console.log('[WV] parseResult:', localResult.expenses.length, 'expenses,', localResult.income.length, 'income,', localResult._detectedHeaders);
         const totalFound = localResult.assets.length + localResult.liabilities.length +
                           localResult.income.length + localResult.expenses.length;
         const withIds = obj => {
