@@ -57,7 +57,7 @@ if("serviceWorker" in navigator){
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
 // Robust SheetJS loader — tries 3 CDNs in order if first fails
 window._xlsxLoaded = !!window.XLSX;
@@ -70,6 +70,7 @@ if(!window._xlsxLoaded){
     s.onerror = function(){ loadXLSX(urls, idx+1); };
     document.head.appendChild(s);
   })([
+    'https://unpkg.com/xlsx@0.20.3/dist/xlsx.full.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
     'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
   ], 0);
@@ -1815,8 +1816,18 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
       wb=XLSX.read(buf,opts);
     }catch(e){
       const msg=(e.message||"").toLowerCase();
-      // SheetJS throws "File is password-protected" or "Encrypted" when wrong/no pwd
-      if(msg.includes("password")||msg.includes("encrypt")||msg.includes("protected")){
+      const errStr=(e.toString()||"").toLowerCase();
+      const combined=msg+" "+errStr;
+      // If password was supplied and still fails → wrong password
+      if(password && (combined.includes("password")||combined.includes("encrypt")||combined.includes("protected")||combined.includes("cfb")||combined.includes("incorrect"))){
+        throw new Error("XLSX_WRONG_PASSWORD:"+file.name);
+      }
+      // No password supplied → ask for it
+      if(!password && (combined.includes("password")||combined.includes("encrypt")||combined.includes("protected")||combined.includes("cfb"))){
+        throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
+      }
+      // Any other error with no password — might also be encrypted
+      if(!password){
         throw new Error("XLSX_PASSWORD_REQUIRED:"+file.name);
       }
       throw e;
@@ -1825,13 +1836,11 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     wb.SheetNames.forEach(sheetName=>{
       const ws=wb.Sheets[sheetName];
       const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
-      // Filter out completely empty lines
       const cleaned=csv.split("\n").filter(r=>r.replace(/,/g,"").trim().length>0).join("\n");
       if(cleaned.length>0){
         result+=`--- Sheet: ${sheetName} ---\n${cleaned}\n\n`;
       }
     });
-    // Truncate if too large (API limit)
     if(result.length>80000) result=result.slice(0,80000)+"\n[...truncated for length]";
     return result;
   };
@@ -2239,11 +2248,19 @@ General rules:
       }
       // SheetJS Excel password error
       if(err.message?.startsWith("XLSX_PASSWORD_REQUIRED:")){
-        const xlsxName=err.message.split(":")[1];
+        const xlsxName=err.message.split(":").slice(1).join(":");
         setPwdError(xlsxName);
         setStage("upload");
         setParseLog("");
-        notify("🔒 This Excel file is password-protected. Enter the password below and try again.", "error");
+        notify("🔒 This Excel file is password-protected. Enter the password below and click Analyse again.", "error");
+        return;
+      }
+      if(err.message?.startsWith("XLSX_WRONG_PASSWORD:")){
+        const xlsxName=err.message.split(":").slice(1).join(":");
+        setPwdError(xlsxName);
+        setStage("upload");
+        setParseLog("");
+        notify("❌ Wrong password for Excel file. Please check and try again.", "error");
         return;
       }
       setParseLog("Error: " + err.message);
