@@ -586,6 +586,7 @@ async function callAI(apiKey, prompt, imageParts=[]) {
       const msg = e?.error?.message||"";
       if(resp.status===401) throw new Error("Groq API key rejected. Re-enter it in Profile.");
       if(resp.status===429) throw new Error("Groq rate limit hit. Wait 1 minute and try again.");
+      if(resp.status===413) throw new Error("Document too large for Groq free tier. Try uploading fewer pages, or use a CSV export instead of Excel.");
       throw new Error(`Groq API error ${resp.status}: ${msg}`);
     }
     const data = await resp.json();
@@ -1708,6 +1709,267 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     });
   };
 
+  // ── ZERO-AI DOCUMENT PARSERS ─────────────────────────────────────────────────
+  const parseAmtStr = s => {
+    if(s===null||s===undefined||s==="") return 0;
+    return parseFloat(String(s).replace(/[₹,\s\u20b9]/g,"").replace(/\((.+)\)/,"-$1").replace(/[^\d.\-]/g,""))||0;
+  };
+  const parseIndDate = s => {
+    if(!s) return today();
+    const str = String(s).trim();
+    // Excel serial date number
+    if(/^\d{5}$/.test(str)){
+      const d = new Date((parseInt(str)-25569)*86400000);
+      return d.toISOString().split("T")[0];
+    }
+    let m=str.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    if(m){ const y=m[3].length===2?"20"+m[3]:m[3]; return `${y}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`; }
+    m=str.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
+    if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+    return today();
+  };
+  const detectDocKind = (text, fname="") => {
+    const t=text.toLowerCase(); const f=fname.toLowerCase();
+    if(/cams|kfintech|karvy|consolidated account statement/i.test(t)) return "cas";
+    if(/isin.*qty|qty.*isin|holding.*statement|demat|cdsl|nsdl|avg.*cost|current.*value.*exchange/i.test(t)) return "demat";
+    if(/folio.*no|nav.*units|scheme.*name|mutual fund/i.test(t)) return "mf";
+    if(/home loan|car loan|outstanding.*principal|emi.*schedule|loan account number/i.test(t)) return "loan";
+    if(/fixed deposit|fd.*certificate|maturity.*amount|deposit.*receipt/i.test(t)) return "fd";
+    if(/credit card|card.*statement|minimum.*due|total.*due/i.test(t)) return "cc";
+    return "bank";
+  };
+
+  // Parse CSV/tabular text into array of row objects using header row
+  const parseTabular = (text) => {
+    const rows = text.split(/\n/).map(r=>r.trim()).filter(Boolean);
+    if(rows.length < 2) return {headers:[], data:[]};
+    // Find header row — first row with multiple columns and no big numbers
+    let headerIdx = 0;
+    for(let i=0; i<Math.min(10,rows.length); i++){
+      const cells = rows[i].split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,""));
+      if(cells.length >= 3 && cells.some(c=>/date|narr|desc|debit|credit|amount|balance|symbol|isin|folio|scheme/i.test(c))){
+        headerIdx = i; break;
+      }
+    }
+    const headers = rows[headerIdx].split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,"").toLowerCase());
+    const data = rows.slice(headerIdx+1).map(row=>{
+      const cells = row.split(/,|\t/).map(c=>c.trim().replace(/^"|"$/g,""));
+      const obj={};
+      headers.forEach((h,i)=>{ obj[h]=cells[i]||""; });
+      obj._raw = row;
+      return obj;
+    }).filter(r=>Object.values(r).some(v=>v&&v!==""));
+    return {headers, data};
+  };
+
+  // Find column by multiple possible names
+  const findCol = (obj, ...names) => {
+    const keys = Object.keys(obj);
+    for(const name of names){
+      const k = keys.find(k=>k.toLowerCase().includes(name.toLowerCase()));
+      if(k && obj[k]!==undefined && obj[k]!=="") return obj[k];
+    }
+    return "";
+  };
+
+  const parseBankCSV = (text) => {
+    const expenses=[], income=[];
+    let bankName="", acNo="", closingBal=null;
+    if(/HDFC/i.test(text)) bankName="HDFC Bank";
+    else if(/ICICI/i.test(text)) bankName="ICICI Bank";
+    else if(/SBI|State Bank/i.test(text)) bankName="SBI";
+    else if(/Axis/i.test(text)) bankName="Axis Bank";
+    else if(/Kotak/i.test(text)) bankName="Kotak";
+    else if(/IndusInd/i.test(text)) bankName="IndusInd";
+    else if(/Yes Bank/i.test(text)) bankName="Yes Bank";
+    const acM=text.match(/(?:A\/c|Account|Acct)[.\s#:]*(?:No\.?)?[:\s]*([X\d]{4,20})/i);
+    if(acM) acNo=acM[1].slice(-4);
+
+    const {headers, data} = parseTabular(text);
+    if(data.length > 0){
+      // Column-based parsing (Excel/CSV with headers)
+      data.forEach(row=>{
+        const date  = parseIndDate(findCol(row,"date","txn date","transaction date","value date")||"");
+        const narr  = findCol(row,"narration","description","particulars","remarks","detail","memo")||"";
+        const debit = parseAmtStr(findCol(row,"debit","withdrawal","dr amount","debit amount","amount dr"));
+        const credit= parseAmtStr(findCol(row,"credit","deposit","cr amount","credit amount","amount cr"));
+        const bal   = parseAmtStr(findCol(row,"balance","closing","available"));
+        if(bal>0) closingBal=bal;
+        const name  = narr.replace(/\s+/g," ").trim().slice(0,50) || (debit>0?"Bank Debit":"Bank Credit");
+        if(debit>0){
+          expenses.push({id:"tmp_"+Math.random().toString(36).slice(2),
+            category:guessCategory(name),name,amount:debit,date,type:"Variable",confidence:"high"});
+        }
+        if(credit>0){
+          income.push({id:"tmp_"+Math.random().toString(36).slice(2),
+            source:"Other",name,amount:credit,date,frequency:"One-time",confidence:"high"});
+        }
+      });
+    } else {
+      // Fallback: line-by-line for unstructured text
+      text.split(/\n/).filter(l=>l.trim().length>10).forEach(line=>{
+        const amtM=line.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)||line.match(/([\d,]{4,}\.?\d{0,2})\s*(Dr|Cr)/i);
+        if(!amtM) return;
+        const amount=parseAmtStr(amtM[1]);
+        if(!amount||amount<1) return;
+        const isDebit=/\bDr\b|debit|debited|withdrawal|payment/i.test(line);
+        const isCredit=/\bCr\b|credit|credited|deposit|salary/i.test(line);
+        if(!isDebit&&!isCredit) return;
+        const dateM=line.match(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/);
+        const date=dateM?parseIndDate(dateM[0]):today();
+        let name=line.replace(/(?:INR|Rs\.?|₹)\s*[\d,]+\.?\d*/gi,"").replace(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/g,"").replace(/\b(Dr|Cr)\b/gi,"").replace(/\s+/g," ").trim().slice(0,50)||(isDebit?"Bank Debit":"Bank Credit");
+        (isDebit?expenses:income).push({id:"tmp_"+Math.random().toString(36).slice(2),
+          category:isDebit?guessCategory(name):"Other Income",name,amount,date,type:"Variable",confidence:"medium"});
+      });
+    }
+    return {expenses,income,bankName,acNo,closingBal};
+  };
+
+  const parseDematCSV = (text) => {
+    const assets=[];
+    const {headers, data} = parseTabular(text);
+    if(data.length > 0 && headers.some(h=>/isin|symbol|ticker/i.test(h))){
+      data.forEach(row=>{
+        const ticker= findCol(row,"symbol","tradingsymbol","ticker","scrip");
+        const isin  = findCol(row,"isin");
+        const qty   = parseAmtStr(findCol(row,"qty","quantity","shares","balance qty","current balance"));
+        const avgP  = parseAmtStr(findCol(row,"avg","average","cost","buy price","avg cost","purchase price"));
+        const ltp   = parseAmtStr(findCol(row,"ltp","last price","current price","market price","close"));
+        const val   = parseAmtStr(findCol(row,"current value","market value","value")) || qty*(ltp||avgP);
+        const name  = findCol(row,"company","name","scrip name","instrument") || ticker;
+        if((qty>0||val>0) && (ticker||isin)){
+          assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+            category:"Stocks",name:name||ticker,ticker,isin,
+            exchange:isin&&isin.startsWith("INE")?"NSE":"NSE",
+            qty,buyPrice:avgP,value:val||qty*avgP,invested:qty*avgP,
+            broker:"",confidence:"high"});
+        }
+      });
+    } else {
+      // ISIN-based fallback
+      text.split(/\n/).forEach(line=>{
+        const isinM=line.match(/([A-Z]{2}[A-Z0-9]{10})/);
+        if(!isinM) return;
+        const isin=isinM[1];
+        const nums=[...line.matchAll(/([\d,]+\.?\d*)/g)].map(m=>parseAmtStr(m[1])).filter(n=>n>0&&n<100000000);
+        if(!nums.length) return;
+        let name=line.split(isin)[0].replace(/[|,\t]+/g," ").trim().slice(0,40)||isin;
+        const qty=nums[0]||0; const buyP=nums[1]||0; const val=nums[2]||qty*buyP;
+        if(qty>0) assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+          category:"Stocks",name,ticker:name.split(" ")[0].toUpperCase().slice(0,12),isin,
+          exchange:"NSE",qty,buyPrice:buyP,value:val,invested:qty*buyP,confidence:"medium"});
+      });
+    }
+    return assets;
+  };
+
+  const parseMFCSV = (text) => {
+    const assets=[]; let scheme="", folio="";
+    const {headers,data}=parseTabular(text);
+    if(data.length>0&&headers.some(h=>/scheme|fund|folio|nav|units/i.test(h))){
+      data.forEach(row=>{
+        const name  =findCol(row,"scheme","fund name","scheme name")||"";
+        const f     =findCol(row,"folio","folio no")||"";
+        const units =parseAmtStr(findCol(row,"units","balance units","closing units"));
+        const nav   =parseAmtStr(findCol(row,"nav","net asset"));
+        const value =parseAmtStr(findCol(row,"value","current value","market value"))||units*nav;
+        const inv   =parseAmtStr(findCol(row,"invested","cost","purchase value"));
+        if(name&&units>0) assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+          category:"Mutual Funds",name,folio:f,units,nav,value,invested:inv,confidence:"high"});
+      });
+    }
+    if(!assets.length){
+      text.split(/\n/).forEach(line=>{
+        const fM=line.match(/Folio[:\s]*([A-Z0-9\/]+)/i); if(fM){folio=fM[1];return;}
+        if(line.length>20&&line.length<120&&/fund|scheme|plan|direct|growth/i.test(line)&&!/balance|nav|value|date/i.test(line)){scheme=line.trim();return;}
+        const nums=[...line.matchAll(/([\d,]+\.?\d{2,4})/g)].map(m=>parseAmtStr(m[1])).filter(n=>n>0);
+        if(nums.length>=2&&scheme){
+          const[units,nav,...rest]=nums;const value=rest[0]||units*nav;
+          if(units>0&&nav>0&&nav<100000) assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+            category:"Mutual Funds",name:scheme,folio,units,nav,value,invested:rest[1]||0,confidence:"high"});
+          scheme="";
+        }
+      });
+    }
+    return assets;
+  };
+
+  const parseLoanCSV = (text) => {
+    const liabilities=[];
+    const {data}=parseTabular(text);
+    let outstanding=0, emi=0, rate=0, origAmt=0;
+    if(data.length>0){
+      data.forEach(row=>{
+        const label=Object.values(row)[0]?.toLowerCase()||"";
+        const val=parseAmtStr(Object.values(row)[1]||Object.values(row)[2]||"");
+        if(/outstanding|principal.*balance|current.*balance/i.test(label)&&val>0) outstanding=val;
+        if(/emi|installment/i.test(label)&&val>0) emi=val;
+        if(/rate|interest|roi/i.test(label)&&val>0&&val<50) rate=val;
+        if(/sanctioned|loan.*amount|disbursed/i.test(label)&&val>0) origAmt=val;
+      });
+    }
+    // Also try regex on full text
+    if(!outstanding){
+      const m=text.match(/(?:outstanding|principal.*balance)[:\s]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i);
+      if(m) outstanding=parseAmtStr(m[1]);
+    }
+    if(!emi){ const m=text.match(/(?:emi|installment)[:\s]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i); if(m) emi=parseAmtStr(m[1]); }
+    if(!rate){ const m=text.match(/(?:rate|roi)[:\s]*(\d+\.?\d*)%/i); if(m) rate=parseFloat(m[1]); }
+    if(!origAmt){ const m=text.match(/(?:sanctioned|disbursed)[:\s]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i); if(m) origAmt=parseAmtStr(m[1]); }
+    let cat="Personal Loan";
+    if(/home|housing/i.test(text)) cat="Home Loan";
+    else if(/car|vehicle/i.test(text)) cat="Car Loan";
+    if(outstanding>0||origAmt>0)
+      liabilities.push({id:"tmp_"+Math.random().toString(36).slice(2),
+        category:cat,name:cat,value:outstanding||origAmt,origAmt:origAmt||outstanding,
+        emi,intRate:rate,confidence:"high"});
+    return liabilities;
+  };
+
+  const parseFDCSV = (text) => {
+    const assets=[];
+    const pM=text.match(/(?:principal|deposit\s*amount)[:\s,]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i);
+    const mM=text.match(/(?:maturity\s*amount|maturity\s*value)[:\s,]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i);
+    const rM=text.match(/(?:rate|interest\s*rate)[:\s,]*(\d+\.?\d*)[\s%]/i);
+    const dM=text.match(/(?:maturity\s*date|due\s*date)[:\s,]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
+    const bM=text.match(/(HDFC|SBI|ICICI|Axis|Kotak|IndusInd|Yes\s*Bank)/i);
+    const principal=pM?parseAmtStr(pM[1]):0;
+    if(principal>0) assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+      category:"Fixed Deposits",name:`${bM?bM[0]+" ":""}Fixed Deposit`,
+      principal,value:mM?parseAmtStr(mM[1]):principal,
+      intRate:rM?parseFloat(rM[1]):0,matDate:dM?parseIndDate(dM[1]):"",confidence:"high"});
+    return assets;
+  };
+
+  const parseWithoutAI = (text, filename, docTypeHint) => {
+    const kind = docTypeHint==="auto" ? detectDocKind(text,filename) : docTypeHint;
+    const result={assets:[],liabilities:[],income:[],expenses:[],insurance:[],
+      documentType:kind,documentSummary:"",_parsedBy:"local"};
+    try{
+      if(kind==="cas"||kind==="mf"){
+        result.assets=parseCASText(text);
+        if(!result.assets.length) result.assets=parseMFCSV(text);
+        result.documentSummary=`${result.assets.length} MF holdings`;
+      } else if(kind==="demat"){
+        result.assets=parseDematCSV(text);
+        result.documentSummary=`${result.assets.length} stock holdings`;
+      } else if(kind==="loan"){
+        result.liabilities=parseLoanCSV(text);
+        result.documentSummary="Loan statement";
+      } else if(kind==="fd"){
+        result.assets=parseFDCSV(text);
+        result.documentSummary="FD certificate";
+      } else {
+        const r=parseBankCSV(text);
+        result.expenses=r.expenses; result.income=r.income;
+        result.documentSummary=`${r.expenses.length} expenses, ${r.income.length} credits${r.bankName?" — "+r.bankName:""}`;
+        if(r.closingBal&&r.acNo) result.assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
+          category:"Bank Savings",name:`${r.bankName||"Bank"} XXXX${r.acNo}`,
+          value:r.closingBal,confidence:"high"});
+      }
+    }catch(e){console.warn("Local parser:",e.message);}
+    return result;
+  };
   const handleFiles=useCallback((fileList)=>{
     const accepted=[...fileList].filter(f=>{
       const name=f.name.toLowerCase();
@@ -1845,7 +2107,6 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     if(result.length>80000) result=result.slice(0,80000)+"\n[...truncated for length]";
     return result;
   };
-
   const isXLSX=file=>{
     const name=file.name.toLowerCase();
     return name.endsWith(".xlsx")||name.endsWith(".xls")||name.endsWith(".xlsm")||
@@ -1923,7 +2184,19 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
       // 1. Put the document text FIRST, then the instruction
       // 2. Use "complete this JSON" framing
       // 3. Truncate to avoid token limits
-      const docTextParts = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n\n").slice(0,50000);
+      // Groq free tier: 12,000 TPM limit — ~9,000 chars of document text safe (leaving room for prompt)
+      // Smart truncation: keep header rows + first N rows (most important for statements)
+      const GROQ_DOC_LIMIT = 8000;
+      const rawDocText = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n\n");
+      const docTextParts = isGroq
+        ? (() => {
+            if(rawDocText.length <= GROQ_DOC_LIMIT) return rawDocText;
+            // Keep first 60% + last 10% (headers at top, totals at bottom)
+            const head = rawDocText.slice(0, Math.floor(GROQ_DOC_LIMIT * 0.85));
+            const tail = rawDocText.slice(-Math.floor(GROQ_DOC_LIMIT * 0.10));
+            return head + "\n...[middle truncated to fit Groq token limit]...\n" + tail;
+          })()
+        : rawDocText.slice(0, 50000);
       const groqPrompt = `DOCUMENT:
 ${docTextParts}
 
@@ -2078,6 +2351,51 @@ General rules:
         }
         // If CAS regex found nothing, fall through to AI
         setParseLog("CAS regex found nothing — trying AI…");
+      }
+
+      // ── Try Zero-AI local parser first for text-based files ─────────────────
+      // If no API key, or file is CSV/Excel (text already extracted), try local parser
+      const hasTextFiles = contentParts.some(p=>p.type==="text"&&p.text.length>100);
+      const hasOnlyTextFiles = contentParts.every(p=>p.type==="text");
+      const localText = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n");
+
+      if(hasOnlyTextFiles || !apiKey?.trim()){
+        setParseLog("Parsing document locally (no AI needed)…");
+        const localResult = parseWithoutAI(localText, files[0]?.name||"", docType);
+        const totalFound = localResult.assets.length + localResult.liabilities.length +
+                          localResult.income.length + localResult.expenses.length;
+
+        // Always show results if no API key, OR if we found something
+        if(totalFound > 0 || !apiKey?.trim()){
+          const withIds = obj => {
+            const o={...obj, id:obj.id||"tmp_"+Math.random().toString(36).slice(2)};
+            ["value","qty","buyPrice","units","nav","invested","intRate","cover","premium","amount","origAmt","emi"]
+              .forEach(k=>{ if(o[k]!==undefined) o[k]=parseFloat(o[k])||0; });
+            return o;
+          };
+          localResult.assets     = (localResult.assets||[]).map(withIds);
+          localResult.liabilities= (localResult.liabilities||[]).map(withIds);
+          localResult.income     = (localResult.income||[]).map(withIds);
+          localResult.expenses   = (localResult.expenses||[]).map(withIds);
+          localResult.insurance  = (localResult.insurance||[]).map(withIds);
+          const sel={};
+          [...localResult.assets,...localResult.liabilities,...localResult.income,...localResult.expenses]
+            .forEach(i=>{ if(i.confidence!=="low") sel[i.id]=true; });
+          setParsed(localResult); setSelected(sel); setStage("review"); setParseLog("");
+          notify(totalFound>0
+            ? `✓ Found ${totalFound} entries — review and add to your data`
+            : `⚠ 0 entries found — try selecting the correct Document Type above, or export as CSV from your bank`
+          );
+          setParsing(false); return;
+        }
+        // Has API key and local found nothing — try AI
+        setParseLog("Local parser found nothing — sending to AI…");
+      }
+
+      // ── AI parsing (for PDFs, images, or when local parser found nothing) ───
+      if(!apiKey?.trim()){
+        notify("No API key set. Upload a CSV or Excel file — those work without AI. Go to Profile to add a Groq/Claude key for PDF support.", "error");
+        setStage("upload"); setParsing(false); return;
       }
 
       const aiProvider = apiKey.trim().startsWith("AIzaSy") ? "Gemini" : apiKey.trim().startsWith("gsk_") ? "Groq" : "Claude";
@@ -2510,7 +2828,7 @@ General rules:
                 </div>
               );})}
               <button className="btn btn-primary" style={{width:"100%",marginTop:10,padding:"12px",fontSize:14}} onClick={parseDocuments}>
-                🤖 Analyse & Extract Financial Data
+                {apiKey?.trim() ? "🤖 Analyse & Extract Financial Data" : "📊 Parse Document (No AI Key Needed for CSV/Excel)"}
               </button>
 
               {/* Workaround panel when Excel decryption fails */}
