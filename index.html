@@ -10,7 +10,7 @@
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
 <meta http-equiv="X-Frame-Options" content="DENY"/>
 <meta http-equiv="Referrer-Policy" content="no-referrer"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://www.gstatic.com https://accounts.google.com https://apis.google.com https://cdn.jsdelivr.net; connect-src 'self' https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://mfapi.in https://query1.finance.yahoo.com https://api.coingecko.com https://api.emailjs.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' data: blob:;"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://www.gstatic.com https://accounts.google.com https://apis.google.com https://cdn.jsdelivr.net; connect-src 'self' https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://mfapi.in https://query1.finance.yahoo.com https://query2.finance.yahoo.com https://api.coingecko.com https://api.emailjs.com https://api.allorigins.win https://corsproxy.io https://api.codetabs.com https://thingproxy.freeboard.io https://proxy.cors.sh https://www.nseindia.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' data: blob:;"/>
 <title>WealthVault — Smart Finance & Legacy App</title>
 <!-- BUILD: 2026-03-18-v4 -->
 <!-- Google Identity Services for Drive OAuth -->
@@ -5184,18 +5184,20 @@ function AssetUploadZone({cat, onParsed, notify, apiKey}){
 }
 
 // ── LIVE PRICE FETCH ──────────────────────────────────────────────────────────
-// Yahoo Finance blocks direct browser fetch (CORS). Cascade through reliable proxies.
+// Yahoo Finance blocks direct browser fetch (CORS). Cascade through proxies.
 const PROXIES = [
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
   url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  url => `https://proxy.cors.sh/${url}`,
 ];
 
-async function fetchWithProxy(targetUrl, ms=9000){
-  // Try direct first (works when served over HTTPS)
+async function fetchWithProxy(targetUrl, ms=12000){
+  // Try direct first
   try{
-    const r = await fetch(targetUrl,{signal:AbortSignal.timeout(ms)});
-    if(r.ok){ const t=await r.text(); return JSON.parse(t); }
+    const r = await fetch(targetUrl,{signal:AbortSignal.timeout(ms),mode:"cors"});
+    if(r.ok){ const t=await r.text(); if(t.trim().startsWith("{")) return JSON.parse(t); }
   }catch(e){}
   // Try each proxy in order
   for(const mkProxy of PROXIES){
@@ -5203,11 +5205,39 @@ async function fetchWithProxy(targetUrl, ms=9000){
       const r = await fetch(mkProxy(targetUrl),{signal:AbortSignal.timeout(ms)});
       if(!r.ok) continue;
       const txt = await r.text();
-      if(txt.startsWith('{"contents')){ return JSON.parse(JSON.parse(txt).contents); }
-      return JSON.parse(txt);
+      if(!txt||txt.length<10) continue;
+      // allorigins wraps in {contents:...}
+      if(txt.includes('"contents"')&&txt.includes('"status"')){
+        const wrapper = JSON.parse(txt);
+        if(wrapper.contents) return JSON.parse(wrapper.contents);
+      }
+      if(txt.trim().startsWith("{")) return JSON.parse(txt);
     }catch(e){ continue; }
   }
   throw new Error("All proxies failed — check internet connection");
+}
+
+// Try NSE India API directly (no proxy needed for some endpoints)
+async function fetchNSEPrice(ticker){
+  const sym = ticker.replace(/\.NS$/i,"").toUpperCase();
+  try{
+    const r = await fetch(`https://www.nseindia.com/api/quote-equity?symbol=${encodeURIComponent(sym)}`,
+      {headers:{"Accept":"application/json","User-Agent":"Mozilla/5.0"},signal:AbortSignal.timeout(8000)});
+    if(!r.ok) throw new Error("NSE "+r.status);
+    const d = await r.json();
+    const price = d?.priceInfo?.lastPrice || d?.priceInfo?.close;
+    if(!price) throw new Error("no price");
+    return {
+      price,
+      prevClose: d?.priceInfo?.previousClose,
+      high52w:   d?.priceInfo?.["52WeekHigh"],
+      low52w:    d?.priceInfo?.["52WeekLow"],
+      currency:  "INR",
+      shortName: d?.info?.companyName||sym,
+      exchange:  "NSE",
+      ts: new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit"}),
+    };
+  }catch(e){ throw e; }
 }
 
 async function fetchYahooQuote(ticker, exchange){
@@ -5219,10 +5249,20 @@ async function fetchYahooQuote(ticker, exchange){
   } else {
     sym = ticker.toUpperCase()+".NS";
   }
+
+  // Try NSE direct API first (no proxy, fastest)
+  if(!sym.endsWith(".BO")){
+    try{ return await fetchNSEPrice(sym); }catch(e){}
+  }
+
+  // Fall back to Yahoo Finance via proxy
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d&includePrePost=false`;
   let json;
   try{ json = await fetchWithProxy(url); }
-  catch(e){ json = await fetchWithProxy(url.replace("query1","query2")); }
+  catch(e){
+    try{ json = await fetchWithProxy(url.replace("query1","query2")); }
+    catch(e2){ throw new Error(`All proxies failed — check internet connection`); }
+  }
   const meta = json?.chart?.result?.[0]?.meta;
   if(!meta) throw new Error(`No data for ${sym} — verify ticker symbol`);
   const price = meta.regularMarketPrice || meta.previousClose;
