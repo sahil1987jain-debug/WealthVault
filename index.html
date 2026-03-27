@@ -6383,7 +6383,17 @@ function reconcileItems(incoming, existing, keyFields=[]){
         continue;
       }
     }
-    // ── AUTO MATCH ────────────────────────────────────────────────────────────
+
+    // ── Bank statement transactions: always ADD, never match existing ─────────
+    // Expenses/income from statements don't have unique IDs and names are generic
+    // — matching them to existing entries causes "unchanged" and they get skipped
+    const isTransactionItem = (item.amount>0) && (item.type==="Variable"||item.type==="Fixed"||item.frequency==="One-time") && !item.isin && !item.policyNo && !item.acNo && !item.folio && !item.ticker;
+    if(isTransactionItem){
+      results.push({action:"add", incoming:item, existing:null, changes:[], score:0});
+      continue;
+    }
+
+    // ── AUTO MATCH (for assets, liabilities, insurance) ──────────────────────
     let bestMatch = null, bestScore = 0;
 
     for(const ex of existing){
