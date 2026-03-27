@@ -1741,11 +1741,10 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     if(/cams|kfintech|karvy|consolidated account statement/i.test(t)) return "cas";
     if(/isin.*qty|qty.*isin|holding.*statement|demat|cdsl|nsdl|avg.*cost|current.*value.*exchange/i.test(t)) return "demat";
     if(/folio.*no|nav.*units|scheme.*name|mutual fund statement/i.test(t)) return "mf";
-    // Loan: must have BOTH loan type + outstanding/emi to avoid false positives
+    // FD — check before loan to avoid "deposit" matching loan text
+    if(/fixed deposit advice|deposit\s*amount.*INR|deposit\s*start\s*date|maturity\s*date.*\d{2}\/\d{2}\/\d{4}|rate\s*of\s*interest.*%|fd.*certificate|deposit.*receipt/i.test(t)) return "fd";
     if(/(home loan|car loan|personal loan|loan account)/.test(t) && /(outstanding|emi schedule|principal balance)/.test(t)) return "loan";
-    if(/fixed deposit|fd.*certificate|maturity.*amount.*deposit|deposit.*receipt/i.test(t)) return "fd";
     if(/credit card|card.*statement|minimum.*due|total.*due.*amount/i.test(t)) return "cc";
-    // Bank statement — broad catch for any tabular statement
     return "bank";
   };
 
@@ -2185,16 +2184,93 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
 
   const parseFDCSV = (text) => {
     const assets=[];
-    const pM=text.match(/(?:principal|deposit\s*amount)[:\s,]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i);
-    const mM=text.match(/(?:maturity\s*amount|maturity\s*value)[:\s,]*(?:₹|INR|Rs\.?)?\s*([\d,]+\.?\d*)/i);
-    const rM=text.match(/(?:rate|interest\s*rate)[:\s,]*(\d+\.?\d*)[\s%]/i);
-    const dM=text.match(/(?:maturity\s*date|due\s*date)[:\s,]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
-    const bM=text.match(/(HDFC|SBI|ICICI|Axis|Kotak|IndusInd|Yes\s*Bank)/i);
-    const principal=pM?parseAmtStr(pM[1]):0;
-    if(principal>0) assets.push({id:"tmp_"+Math.random().toString(36).slice(2),
-      category:"Fixed Deposits",name:`${bM?bM[0]+" ":""}Fixed Deposit`,
-      principal,value:mM?parseAmtStr(mM[1]):principal,
-      intRate:rM?parseFloat(rM[1]):0,matDate:dM?parseIndDate(dM[1]):"",confidence:"high"});
+
+    // ── Detect bank ───────────────────────────────────────────────────────────
+    let bank="";
+    if(/IndusInd/i.test(text))      bank="IndusInd Bank";
+    else if(/HDFC/i.test(text))     bank="HDFC Bank";
+    else if(/SBI|State Bank/i.test(text)) bank="SBI";
+    else if(/ICICI/i.test(text))    bank="ICICI Bank";
+    else if(/Axis/i.test(text))     bank="Axis Bank";
+    else if(/Kotak/i.test(text))    bank="Kotak Bank";
+    else if(/Yes Bank/i.test(text)) bank="Yes Bank";
+    else if(/Canara/i.test(text))   bank="Canara Bank";
+    else if(/IDBI/i.test(text))     bank="IDBI Bank";
+
+    // ── Extract each field with multiple pattern variants ─────────────────────
+
+    // Deposit Amount / Principal
+    // IndusInd: "Deposit Amount  INR 600000"
+    // HDFC: "Principal Amount: Rs. 1,00,000"
+    const principalM = text.match(/deposit\s*amount\s+INR\s+([\d,]+)/i)
+      || text.match(/(?:principal|deposit)\s*amount[:\s]*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)
+      || text.match(/(?:INR|Rs\.?|₹)\s*([\d,]+)\s*\n.*deposit\s*amount/i);
+    const principal = principalM ? parseAmtStr(principalM[1]) : 0;
+
+    // Maturity Amount
+    // IndusInd: "Maturity Amount  INR 600000" (appears twice - header and table)
+    const matAmtM = text.match(/maturity\s*amount\s+INR\s+([\d,]+)/i)
+      || text.match(/maturity\s*(?:amount|value)[:\s]*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i);
+    const matAmt = matAmtM ? parseAmtStr(matAmtM[1]) : principal;
+
+    // Interest Rate
+    // IndusInd: "Rate of Interest Per(p.a)  7.75%"
+    const rateM = text.match(/rate\s*of\s*interest[^0-9]*([\d]+\.?\d*)%/i)
+      || text.match(/(?:interest\s*rate|roi|rate)[:\s]*([\d]+\.?\d*)\s*%/i)
+      || text.match(/([\d]+\.?\d*)\s*%\s*p\.a/i);
+    const rate = rateM ? parseFloat(rateM[1]) : 0;
+
+    // Maturity Date
+    // IndusInd: "Maturity Date  08/05/2026"
+    const matDateM = text.match(/maturity\s*date\s+(\d{2}[\/\-]\d{2}[\/\-]\d{4})/i)
+      || text.match(/(?:maturity|due|expiry)\s*date[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
+    const matDate = matDateM ? parseIndDate(matDateM[1]) : "";
+
+    // Deposit/Start Date
+    // IndusInd: "Deposit Start Date  08/05/2023"
+    const startDateM = text.match(/deposit\s*start\s*date\s+(\d{2}[\/\-]\d{2}[\/\-]\d{4})/i)
+      || text.match(/(?:start|opening|booking|issue)\s*date[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
+    const startDate = startDateM ? parseIndDate(startDateM[1]) : today();
+
+    // FD / Deposit Number
+    const fdNoM = text.match(/deposit\s*no[:\s]*(\d+)/i)
+      || text.match(/(?:fd|fdr|deposit|account)\s*(?:no|number|#)[:\s.]*([A-Z0-9\-\/]+)/i);
+    const fdNo = fdNoM ? fdNoM[1] : "";
+
+    // Tenure / Period
+    // IndusInd: "Deposit Period :  36 month(s) 0 day(s)"
+    const tenureM = text.match(/deposit\s*period\s*[:\s]*(\d+)\s*month/i)
+      || text.match(/(?:tenure|period|term)[:\s]*(\d+)\s*(?:month|year)/i);
+    const tenure = tenureM ? tenureM[1]+" Months" : "";
+
+    // Interest frequency
+    // IndusInd: "Interest Instructions  QUARTERLY"
+    const freqM = text.match(/(?:interest\s*instructions?|payout)[:\s]*(QUARTERLY|MONTHLY|ANNUALLY|CUMULATIVE|AT MATURITY|HALF[\s\-]YEARLY)/i);
+    const freq = freqM ? freqM[1] : "Cumulative (at maturity)";
+
+    // Customer name
+    const nameM = text.match(/^([A-Z][A-Z\s]{5,40})(?:\n|Customer)/m)
+      || text.match(/(?:name|holder)[:\s]+([A-Z][A-Z\s]{5,40})/i);
+    const holder = nameM ? nameM[1].trim() : "";
+
+    // Branch
+    const branchM = text.match(/branch\s*name[:\s]*(.+?)(?:\n|Deposit Type)/i);
+    const branch = branchM ? branchM[1].trim() : "";
+
+    if(principal > 0 || matAmt > 0){
+      const amount = principal || matAmt;
+      assets.push({
+        id:"tmp_"+Math.random().toString(36).slice(2),
+        category:"Fixed Deposits",
+        name:`${bank} FD${fdNo?" — "+fdNo.slice(-6):""}`,
+        bank, fdNo, principal:amount, value:matAmt||amount,
+        intRate:rate, tenure, matDate, buyDate:startDate,
+        intType: /CUMUL|AT MATURITY/i.test(freq) ? "Cumulative (at maturity)" : freq,
+        autoRenew: /renew/i.test(text) ? "Yes" : "No",
+        details:`${holder?holder+" · ":""}${branch?branch+" · ":""}Rate ${rate}%${tenure?" · "+tenure:""}`,
+        confidence:"high"
+      });
+    }
     return assets;
   };
 
@@ -2406,8 +2482,16 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
   };
 
   const parseDocuments=async()=>{
-    if(!apiKey||!apiKey.trim()){notify("Please add your AI API key in Profile settings","error");return;}
-    if(!apiKey.trim().startsWith("sk-ant-")&&!apiKey.trim().startsWith("AIzaSy")&&!apiKey.trim().startsWith("gsk_")){notify("Unknown key format. Use Claude (sk-ant-...), Gemini (AIzaSy...) or Groq (gsk_...) key.","error");return;}
+    const hasKey = apiKey && apiKey.trim() && (apiKey.trim().startsWith("sk-ant-")||apiKey.trim().startsWith("AIzaSy")||apiKey.trim().startsWith("gsk_"));
+    if(!hasKey){
+      // No API key — only allow if file types support local parsing
+      const allLocalFriendly = files.every(f=>isXLSX(f)||isCSV(f)||f.type.includes("pdf")||f.name.toLowerCase().endsWith(".pdf"));
+      if(!allLocalFriendly){
+        notify("Please add your AI API key in Profile settings","error"); return;
+      }
+    } else if(!apiKey.trim().startsWith("sk-ant-")&&!apiKey.trim().startsWith("AIzaSy")&&!apiKey.trim().startsWith("gsk_")){
+      notify("Unknown key format. Use Claude (sk-ant-...), Gemini (AIzaSy...) or Groq (gsk_...) key.","error");return;
+    }
     if(files.length===0){notify("Please upload at least one document","error");return;}
     setParsing(true);setStage("parsing");setParseLog("Reading document(s)...");
     setPwdError(null);
@@ -2415,7 +2499,7 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
     try {
       const messages=[];
       const contentParts=[];
-      const isGroq = apiKey.trim().startsWith("gsk_");
+      const isGroq = hasKey && apiKey.trim().startsWith("gsk_");
 
       for(const file of files){
         setParseLog(`Processing: ${file.name}...`);
@@ -2429,20 +2513,23 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
           contentParts.push({type:"image",source:{type:"base64",media_type:mt,data:b64}});
         } else if(file.type.includes("pdf")){
           const pwd=filePwds[file.name]||"";
-          if(isGroq){
-            // Groq: extract text from PDF instead of sending binary
-            setParseLog(`Extracting text from PDF: ${file.name}...`);
-            const pdfText = await extractPDFText(file, pwd);
-            contentParts.push({type:"text",text:pdfText});
-          } else if(pwd){
-            const images=await renderPDFToImages(file, pwd);
-            setParseLog(`Rendered ${images.length} pages from ${file.name}, sending to AI…`);
-            images.forEach(b64=>{
-              contentParts.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:b64}});
-            });
-          } else {
-            const b64=await readFileAsBase64(file);
-            contentParts.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});
+          // Always extract text — used by local parser for FD/loan/MF detection
+          // Also used by Groq (text-only). Claude/Gemini get binary PDF too.
+          setParseLog(`Extracting text from PDF: ${file.name}...`);
+          const pdfText = await extractPDFText(file, pwd);
+          contentParts.push({type:"text", text:pdfText, _isPDF:true, _fileName:file.name});
+          // Claude/Gemini also get the binary PDF for better accuracy
+          if(!isGroq){
+            if(pwd){
+              const images=await renderPDFToImages(file, pwd);
+              setParseLog(`Rendered ${images.length} pages from ${file.name}…`);
+              images.forEach(b64=>{
+                contentParts.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:b64}});
+              });
+            } else {
+              const b64=await readFileAsBase64(file);
+              contentParts.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});
+            }
           }
         } else if(isXLSX(file)){
           setParseLog(`Reading Excel file: ${file.name}...`);
@@ -2662,8 +2749,17 @@ General rules:
       const hasOnlyTextFiles = contentParts.every(p=>p.type==="text");
       const localText = contentParts.filter(p=>p.type==="text").map(p=>p.text).join("\n");
 
+      // Also try local parser for PDF documents when docType is fd/loan/mf/cas
+      // These have well-structured text that regex handles better than AI
+      const isPDF = files.every(f=>f.type.includes("pdf")||f.name.toLowerCase().endsWith(".pdf"));
+      const localFriendlyTypes = ["fd","loan","cas","mf"];
+      const detectedKind = docType==="auto" ? detectDocKind(localText, files[0]?.name||"") : docType;
+      const tryLocalFirst = isExcelOrCSV || (!apiKey?.trim() && hasOnlyTextFiles) ||
+                            (isPDF && localFriendlyTypes.includes(detectedKind));
+
       // For CSV/Excel: always use local parser, never send to AI
-      if(isExcelOrCSV || (!apiKey?.trim() && hasOnlyTextFiles)){
+      // For FD/loan/MF PDFs: try local parser first
+      if(tryLocalFirst || (!apiKey?.trim() && hasOnlyTextFiles)){
         setParseLog("Parsing document locally (no AI needed)…");
         // Extract raw JSON rows from Excel if available (bypasses CSV parsing issues)
         const xlsxJsonRows = contentParts.find(p=>p._xlsxRows)?._xlsxRows||null;
@@ -2688,16 +2784,22 @@ General rules:
         [...localResult.assets,...localResult.liabilities,...localResult.income,...localResult.expenses]
           .forEach(i=>{ if(i.confidence!=="low") sel[i.id]=true; });
         setParsed(localResult); setSelected(sel); setStage("review"); setParseLog("");
-        notify(totalFound>0
-          ? `✓ Found ${totalFound} entries — review and confirm to import`
-          : `⚠ 0 entries found. Detected columns: "${localResult._detectedHeaders||"(none detected)"}". Select correct Document Type above, or check that your file has Date/Debit/Credit columns.`
-        );
-        setParsing(false); return;
+        if(totalFound>0){
+          notify(`✓ Found ${totalFound} entries — review and confirm to import`);
+          setParsing(false); return;
+        }
+        // For Excel/CSV: always stop here even with 0 results
+        if(isExcelOrCSV){
+          notify(`⚠ 0 entries found. Detected columns: "${localResult._detectedHeaders||"(none detected)"}". Select correct Document Type above, or check that your file has Date/Debit/Credit columns.`);
+          setParsing(false); return;
+        }
+        // For PDFs: fall through to AI if local found nothing
+        setParseLog("Local parser found nothing — sending to AI for deeper analysis…");
       }
 
-      // ── AI parsing — for PDFs and images only ────────────────────────────────
-      if(!apiKey?.trim()){
-        notify("No API key — upload a CSV or Excel file for no-AI parsing, or add a Groq key in Profile for PDF support.", "error");
+      // ── AI parsing — for PDFs and images only when local found nothing ───
+      if(!hasKey){
+        notify("No API key — upload a CSV or Excel file for no-AI parsing, or add a Groq key in Profile for PDF/AI support.", "error");
         setStage("upload"); setParsing(false); return;
       }
 
