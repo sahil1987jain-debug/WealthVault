@@ -2187,75 +2187,91 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
 
     // ── Detect bank ───────────────────────────────────────────────────────────
     let bank="";
-    if(/IndusInd/i.test(text))      bank="IndusInd Bank";
-    else if(/HDFC/i.test(text))     bank="HDFC Bank";
-    else if(/SBI|State Bank/i.test(text)) bank="SBI";
-    else if(/ICICI/i.test(text))    bank="ICICI Bank";
-    else if(/Axis/i.test(text))     bank="Axis Bank";
-    else if(/Kotak/i.test(text))    bank="Kotak Bank";
-    else if(/Yes Bank/i.test(text)) bank="Yes Bank";
-    else if(/Canara/i.test(text))   bank="Canara Bank";
-    else if(/IDBI/i.test(text))     bank="IDBI Bank";
+    if(/IndusInd/i.test(text))           bank="IndusInd Bank";
+    else if(/HDFC/i.test(text))          bank="HDFC Bank";
+    else if(/SBI|State Bank/i.test(text))bank="SBI";
+    else if(/ICICI/i.test(text))         bank="ICICI Bank";
+    else if(/Axis/i.test(text))          bank="Axis Bank";
+    else if(/Kotak/i.test(text))         bank="Kotak Bank";
+    else if(/Yes Bank/i.test(text))      bank="Yes Bank";
+    else if(/Canara/i.test(text))        bank="Canara Bank";
+    else if(/IDBI/i.test(text))          bank="IDBI Bank";
 
-    // ── Extract each field with multiple pattern variants ─────────────────────
+    // Helper: find value after a label, handling multiline PDF text
+    // e.g. "Rate of Interest Per(p.a)\n\n7.75%" → "7.75%"
+    const afterLabel = (label) => {
+      const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[:\\s]*([^\\n]+)', 'i');
+      const m = text.match(re);
+      if(m && m[1].trim()) return m[1].trim();
+      // multiline: label on one line, value on next non-empty line
+      const re2 = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\n+\\s*([^\\n]+)', 'i');
+      const m2 = text.match(re2);
+      return m2 ? m2[1].trim() : "";
+    };
 
-    // Deposit Amount / Principal
-    // IndusInd: "Deposit Amount  INR 600000"
-    // HDFC: "Principal Amount: Rs. 1,00,000"
-    const principalM = text.match(/deposit\s*amount\s+INR\s+([\d,]+)/i)
-      || text.match(/(?:principal|deposit)\s*amount[:\s]*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)
-      || text.match(/(?:INR|Rs\.?|₹)\s*([\d,]+)\s*\n.*deposit\s*amount/i);
+    // ── Principal / Deposit Amount ────────────────────────────────────────────
+    // IndusInd PDF: "Deposit Amount\n\nINR 600000"
+    const principalM = text.match(/Deposit Amount[^\n]*\n+\s*(?:INR\s*)?([\d,]+)/i)
+      || text.match(/(?:principal|deposit)\s*amount[:\s]*(?:INR|Rs\.?|₹)\s*([\d,]+)/i);
     const principal = principalM ? parseAmtStr(principalM[1]) : 0;
 
-    // Maturity Amount
-    // IndusInd: "Maturity Amount  INR 600000" (appears twice - header and table)
-    const matAmtM = text.match(/maturity\s*amount\s+INR\s+([\d,]+)/i)
-      || text.match(/maturity\s*(?:amount|value)[:\s]*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i);
+    // ── Maturity Amount ───────────────────────────────────────────────────────
+    // Appears twice (header + table) — pick first
+    const matAmtM = text.match(/Maturity Amount[:\s]*INR\s*([\d,]+)/i)
+      || text.match(/Maturity Amount[:\s]*(?:₹|Rs\.?)?\s*([\d,]+)/i);
     const matAmt = matAmtM ? parseAmtStr(matAmtM[1]) : principal;
 
-    // Interest Rate
-    // IndusInd: "Rate of Interest Per(p.a)  7.75%"
-    const rateM = text.match(/rate\s*of\s*interest[^0-9]*([\d]+\.?\d*)%/i)
-      || text.match(/(?:interest\s*rate|roi|rate)[:\s]*([\d]+\.?\d*)\s*%/i)
-      || text.match(/([\d]+\.?\d*)\s*%\s*p\.a/i);
+    // ── Rate of Interest ──────────────────────────────────────────────────────
+    // IndusInd PDF: "Rate of Interest Per(p.a)\n\n7.75%"  (value is on NEXT line)
+    const rateM = text.match(/Rate of Interest[^\n]*\n+\s*([\d.]+)%/i)
+      || text.match(/(?:interest\s*rate|roi)[:\s]*([\d.]+)\s*%/i)
+      || text.match(/([\d.]+)\s*%\s*p\.a/i);
     const rate = rateM ? parseFloat(rateM[1]) : 0;
 
-    // Maturity Date
-    // IndusInd: "Maturity Date  08/05/2026"
-    const matDateM = text.match(/maturity\s*date\s+(\d{2}[\/\-]\d{2}[\/\-]\d{4})/i)
-      || text.match(/(?:maturity|due|expiry)\s*date[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
-    const matDate = matDateM ? parseIndDate(matDateM[1]) : "";
+    // ── Maturity Date ─────────────────────────────────────────────────────────
+    // IndusInd PDF: "Maturity Date\n\n08/05/2026"
+    const matDateRaw = afterLabel("Maturity Date");
+    const matDate = matDateRaw ? parseIndDate(matDateRaw) : "";
 
-    // Deposit/Start Date
-    // IndusInd: "Deposit Start Date  08/05/2023"
-    const startDateM = text.match(/deposit\s*start\s*date\s+(\d{2}[\/\-]\d{2}[\/\-]\d{4})/i)
-      || text.match(/(?:start|opening|booking|issue)\s*date[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
-    const startDate = startDateM ? parseIndDate(startDateM[1]) : today();
+    // ── Deposit Start Date ────────────────────────────────────────────────────
+    // IndusInd PDF: "Deposit Start Date\n\n08/05/2023"
+    const startRaw = afterLabel("Deposit Start Date");
+    const startDate = startRaw ? parseIndDate(startRaw) : today();
 
-    // FD / Deposit Number
-    const fdNoM = text.match(/deposit\s*no[:\s]*(\d+)/i)
-      || text.match(/(?:fd|fdr|deposit|account)\s*(?:no|number|#)[:\s.]*([A-Z0-9\-\/]+)/i);
+    // ── Tenure / Period ───────────────────────────────────────────────────────
+    // IndusInd PDF: "Deposit Period :\n\n36 month(s) 0 day(s)"
+    const tenureRaw = afterLabel("Deposit Period");
+    const tenureM = tenureRaw.match(/(\d+)\s*month/) || text.match(/(\d+)\s*month/i);
+    const tenureYM = tenureRaw.match(/(\d+)\s*year/) || text.match(/tenure[:\s]*(\d+)\s*year/i);
+    const tenure = tenureM ? tenureM[1]+" Months" : tenureYM ? tenureYM[1]+" Years" : "";
+
+    // ── FD / Deposit Number ───────────────────────────────────────────────────
+    const fdNoM = text.match(/Deposit No[:\s]*(\d+)/i)
+      || text.match(/(?:FD|FDR|Deposit|Account)\s*(?:No|Number|#)[:\s.]*([A-Z0-9\-\/]+)/i);
     const fdNo = fdNoM ? fdNoM[1] : "";
 
-    // Tenure / Period
-    // IndusInd: "Deposit Period :  36 month(s) 0 day(s)"
-    const tenureM = text.match(/deposit\s*period\s*[:\s]*(\d+)\s*month/i)
-      || text.match(/(?:tenure|period|term)[:\s]*(\d+)\s*(?:month|year)/i);
-    const tenure = tenureM ? tenureM[1]+" Months" : "";
+    // ── Interest Payout / Type ────────────────────────────────────────────────
+    // IndusInd PDF: "Interest Instructions\n\nQUARTERLY"
+    const freqRaw = afterLabel("Interest Instructions")
+      || afterLabel("Payout");
+    const intType = /QUARTERLY/i.test(freqRaw) ? "Quarterly Payout"
+      : /MONTHLY/i.test(freqRaw)  ? "Monthly Payout"
+      : /ANNUAL/i.test(freqRaw)   ? "Annual Payout"
+      : /HALF/i.test(freqRaw)     ? "Half-Yearly Payout"
+      : "Cumulative (at maturity)";
 
-    // Interest frequency
-    // IndusInd: "Interest Instructions  QUARTERLY"
-    const freqM = text.match(/(?:interest\s*instructions?|payout)[:\s]*(QUARTERLY|MONTHLY|ANNUALLY|CUMULATIVE|AT MATURITY|HALF[\s\-]YEARLY)/i);
-    const freq = freqM ? freqM[1] : "Cumulative (at maturity)";
+    // ── Auto Renew ────────────────────────────────────────────────────────────
+    const matInstRaw = afterLabel("Maturity Instructions") || "";
+    const autoRenew = /renew/i.test(matInstRaw) ? "Yes" : "No";
 
-    // Customer name
-    const nameM = text.match(/^([A-Z][A-Z\s]{5,40})(?:\n|Customer)/m)
-      || text.match(/(?:name|holder)[:\s]+([A-Z][A-Z\s]{5,40})/i);
-    const holder = nameM ? nameM[1].trim() : "";
+    // ── Holder Name ───────────────────────────────────────────────────────────
+    // IndusInd: name is on 3rd line of PDF
+    const holderM = text.match(/^(?:FIXED DEPOSIT ADVICE\n+Date[^\n]+\n+)([A-Z][A-Z\s]+)(?:\n)/m)
+      || text.match(/(?:Name|Holder)[:\s]+([A-Z][A-Z\s]{5,40})/i);
+    const holder = holderM ? holderM[1].trim() : "";
 
-    // Branch
-    const branchM = text.match(/branch\s*name[:\s]*(.+?)(?:\n|Deposit Type)/i);
-    const branch = branchM ? branchM[1].trim() : "";
+    // ── Branch ────────────────────────────────────────────────────────────────
+    const branchRaw = afterLabel("Branch Name");
 
     if(principal > 0 || matAmt > 0){
       const amount = principal || matAmt;
@@ -2263,11 +2279,23 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
         id:"tmp_"+Math.random().toString(36).slice(2),
         category:"Fixed Deposits",
         name:`${bank} FD${fdNo?" — "+fdNo.slice(-6):""}`,
-        bank, fdNo, principal:amount, value:matAmt||amount,
-        intRate:rate, tenure, matDate, buyDate:startDate,
-        intType: /CUMUL|AT MATURITY/i.test(freq) ? "Cumulative (at maturity)" : freq,
-        autoRenew: /renew/i.test(text) ? "Yes" : "No",
-        details:`${holder?holder+" · ":""}${branch?branch+" · ":""}Rate ${rate}%${tenure?" · "+tenure:""}`,
+        bank,
+        fdNo,
+        principal: amount,
+        value: matAmt||amount,
+        intRate: rate,
+        tenure,
+        matDate,
+        buyDate: startDate,
+        intType,
+        autoRenew,
+        details: [
+          holder,
+          branchRaw,
+          rate>0?`Rate ${rate}% p.a.`:"",
+          tenure,
+          intType,
+        ].filter(Boolean).join(" · "),
         confidence:"high"
       });
     }
