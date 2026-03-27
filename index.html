@@ -2262,16 +2262,21 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
 
     // ── Auto Renew ────────────────────────────────────────────────────────────
     const matInstRaw = afterLabel("Maturity Instructions") || "";
-    const autoRenew = /renew/i.test(matInstRaw) ? "Yes" : "No";
+    const autoRenew = /renew/i.test(matInstRaw) ? "Renew Principal only" : "Pay out on Maturity";
 
     // ── Holder Name ───────────────────────────────────────────────────────────
-    // IndusInd: name is on 3rd line of PDF
-    const holderM = text.match(/^(?:FIXED DEPOSIT ADVICE\n+Date[^\n]+\n+)([A-Z][A-Z\s]+)(?:\n)/m)
+    const holderM = text.match(/FIXED DEPOSIT ADVICE[\s\S]*?\n([A-Z][A-Z\s]{5,40})\n/)
       || text.match(/(?:Name|Holder)[:\s]+([A-Z][A-Z\s]{5,40})/i);
     const holder = holderM ? holderM[1].trim() : "";
 
-    // ── Branch ────────────────────────────────────────────────────────────────
+    // ── Branch / PAN / Nomination ─────────────────────────────────────────────
     const branchRaw = afterLabel("Branch Name");
+    const panM = text.match(/PAN\s*[:\s]+([A-Z]{5}\d{4}[A-Z])/i);
+    const pan = panM ? panM[1] : "";
+    const nomM = text.match(/Nomination\s*[:\s]*([YN]|Yes|No)/i);
+    const nominee = nomM ? nomM[1] : "";
+    const custIdM = text.match(/Customer Id[:\s]*(\d+)/i);
+    const custId = custIdM ? custIdM[1] : "";
 
     if(principal > 0 || matAmt > 0){
       const amount = principal || matAmt;
@@ -2289,12 +2294,16 @@ function SmartImport({data,setData,notify,apiKey,setTab}){
         buyDate: startDate,
         intType,
         autoRenew,
+        branch: branchRaw,
+        holder,
+        pan,
+        nominee,
         details: [
-          holder,
-          branchRaw,
+          holder||"",
+          branchRaw||"",
           rate>0?`Rate ${rate}% p.a.`:"",
-          tenure,
-          intType,
+          tenure||"",
+          intType||"",
         ].filter(Boolean).join(" · "),
         confidence:"high"
       });
@@ -3604,31 +3613,92 @@ function ImportItemEditModal({item, section, existingItems, onSave, onClose}){
     </div>
   );
 
-  const ASSET_CATS = ["Stocks","Mutual Funds","Bank","Fixed Deposits","Gold","Real Estate","EPF/PPF","NPS","Crypto","Other"];
+  const ASSET_CATS = ["Stocks","Mutual Funds","Bank Savings","Fixed Deposits","Gold","Real Estate","EPF/PPF","NPS","Crypto","Other"];
   const LIAB_CATS  = ["Home Loan","Car Loan","Personal Loan","Credit Cards","Education Loan","Other"];
   const INC_SRCS   = ["Salary","Freelance","Business","Rental","Dividend","Interest","Capital Gains","Pension","Other"];
   const EXP_CATS   = ["Housing","Food","Transport","Utilities","Healthcare","Insurance","Education","Shopping","Entertainment","SIP","Investment","EMI","Other"];
   const INS_TYPES  = ["Life","Term","Health","Critical Illness","Vehicle","Travel","Home","ULIP","Endowment","Other"];
   const FREQS      = ["Monthly","Quarterly","Annual","One-time","Irregular"];
 
+  // Category-specific asset fields
+  const assetFields = () => {
+    const cat = form.category || "";
+    if(cat==="Fixed Deposits") return [
+      <F key="name"      label="FD Description"         fkey="name" col/>,
+      <F key="bank"      label="Bank / NBFC"            fkey="bank"/>,
+      <F key="fdNo"      label="Deposit Number"         fkey="fdNo" mono/>,
+      <F key="principal" label="Deposit Amount (₹)"     fkey="principal" type="number"/>,
+      <F key="value"     label="Maturity Amount (₹)"    fkey="value" type="number"/>,
+      <F key="intRate"   label="Rate of Interest (% p.a.)" fkey="intRate" type="number"/>,
+      <F key="tenure"    label="Deposit Period"         fkey="tenure"/>,
+      <F key="buyDate"   label="Deposit Start Date"     fkey="buyDate" type="date"/>,
+      <F key="matDate"   label="Maturity Date"          fkey="matDate" type="date"/>,
+      <F key="intType"   label="Interest Instructions"  fkey="intType" opts={["Quarterly Payout","Monthly Payout","Half-Yearly Payout","Annual Payout","Cumulative (at maturity)"]}/>,
+      <F key="autoRenew" label="Maturity Instructions"  fkey="autoRenew" opts={["Renew Principal only","Renew Principal + Interest","Pay out on Maturity","No Auto-Renewal"]}/>,
+      <F key="holder"    label="Deposit Holder"         fkey="holder"/>,
+      <F key="branch"    label="Branch Name"            fkey="branch"/>,
+      <F key="nominee"   label="Nomination"             fkey="nominee"/>,
+      <F key="pan"       label="PAN"                    fkey="pan" mono/>,
+      <F key="details"   label="Notes"                  fkey="details" col/>,
+    ];
+    if(cat==="Stocks") return [
+      <F key="name"     label="Company Name"       fkey="name" col/>,
+      <F key="ticker"   label="NSE / BSE Ticker"   fkey="ticker" mono/>,
+      <F key="isin"     label="ISIN"               fkey="isin" mono/>,
+      <F key="exchange" label="Exchange"           fkey="exchange" opts={["NSE","BSE","MCX","Other"]}/>,
+      <F key="qty"      label="Quantity (Shares)"  fkey="qty" type="number"/>,
+      <F key="buyPrice" label="Avg Buy Price (₹)"  fkey="buyPrice" type="number"/>,
+      <F key="value"    label="Current Value (₹)"  fkey="value" type="number"/>,
+      <F key="broker"   label="Broker"             fkey="broker"/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+    if(cat==="Mutual Funds") return [
+      <F key="name"     label="Scheme Name"        fkey="name" col/>,
+      <F key="folio"    label="Folio Number"       fkey="folio" mono/>,
+      <F key="units"    label="Units"              fkey="units" type="number"/>,
+      <F key="nav"      label="NAV (₹)"            fkey="nav" type="number"/>,
+      <F key="invested" label="Amount Invested (₹)"fkey="invested" type="number"/>,
+      <F key="value"    label="Current Value (₹)"  fkey="value" type="number"/>,
+      <F key="broker"   label="Platform / AMC"     fkey="broker"/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+    if(cat==="Real Estate") return [
+      <F key="name"     label="Property Name"      fkey="name" col/>,
+      <F key="value"    label="Current Value (₹)"  fkey="value" type="number"/>,
+      <F key="buyPrice" label="Buy Price (₹)"      fkey="buyPrice" type="number"/>,
+      <F key="buyDate"  label="Purchase Date"      fkey="buyDate" type="date"/>,
+      <F key="area"     label="Area (sq ft)"       fkey="area" type="number"/>,
+      <F key="address"  label="Address"            fkey="address" col/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+    if(cat==="Gold") return [
+      <F key="name"     label="Description"        fkey="name" col/>,
+      <F key="qty"      label="Quantity (grams)"   fkey="qty" type="number"/>,
+      <F key="buyPrice" label="Buy Price (₹/gram)" fkey="buyPrice" type="number"/>,
+      <F key="value"    label="Current Value (₹)"  fkey="value" type="number"/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+    if(cat==="EPF/PPF"||cat==="NPS") return [
+      <F key="name"     label="Account Name"       fkey="name" col/>,
+      <F key="acNo"     label="Account / UAN No."  fkey="acNo" mono/>,
+      <F key="value"    label="Current Balance (₹)"fkey="value" type="number"/>,
+      <F key="intRate"  label="Interest Rate (%)"  fkey="intRate" type="number"/>,
+      <F key="matDate"  label="Maturity Date"      fkey="matDate" type="date"/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+    // Generic fallback
+    return [
+      <F key="name"     label="Name"               fkey="name" col/>,
+      <F key="category" label="Category"           fkey="category" opts={ASSET_CATS}/>,
+      <F key="value"    label="Current Value (₹)"  fkey="value" type="number"/>,
+      <F key="details"  label="Notes"              fkey="details" col/>,
+    ];
+  };
+
   const sectionConfig = {
     assets: {
-      title:"✏️ Edit Asset",
-      fields:[
-        <F key="name"     label="Name"        fkey="name" col/>,
-        <F key="category" label="Category"    fkey="category" opts={ASSET_CATS}/>,
-        <F key="value"    label="Current Value (₹)" fkey="value" type="number"/>,
-        <F key="qty"      label="Qty / Shares" fkey="qty" type="number"/>,
-        <F key="buyPrice" label="Buy Price (₹)" fkey="buyPrice" type="number"/>,
-        <F key="units"    label="Units (MF)"  fkey="units" type="number"/>,
-        <F key="nav"      label="NAV (₹)"     fkey="nav" type="number"/>,
-        <F key="invested" label="Amount Invested (₹)" fkey="invested" type="number"/>,
-        <F key="ticker"   label="Ticker"      fkey="ticker" mono/>,
-        <F key="isin"     label="ISIN"        fkey="isin" mono/>,
-        <F key="exchange" label="Exchange"    fkey="exchange" opts={["","NSE","BSE","MCX","Other"]}/>,
-        <F key="broker"   label="Broker / Bank / AMC" fkey="broker"/>,
-        <F key="details"  label="Notes"       fkey="details" col/>,
-      ]
+      title:`✏️ Edit ${form.category||"Asset"}`,
+      fields: assetFields(),
     },
     liabilities: {
       title:"✏️ Edit Liability",
@@ -5812,18 +5882,22 @@ const ASSET_SCHEMA = {
     {k:"details",    l:"NOTES",            ph:"Branch, linked loans, etc."},
   ],
   "Fixed Deposits": [
-    {k:"bank",       l:"BANK / NBFC",      ph:"e.g. SBI",                     req:true, type:"select", opts:["SBI","HDFC Bank","ICICI Bank","Axis Bank","Kotak Mahindra","PNB","Post Office","LIC HFL","Bajaj Finance","Shriram Finance","Other"]},
-    {k:"name",       l:"FD DESCRIPTION",   ph:"e.g. SBI FD — Retirement",     req:true},
-    {k:"fdNo",       l:"FD / DEPOSIT NO.", ph:"e.g. SBIN000123456"},
-    {k:"principal",  l:"PRINCIPAL (₹)",    ph:"e.g. 200000",                  type:"number"},
-    {k:"intRate",    l:"INTEREST RATE (% p.a.)",ph:"e.g. 7.1",               type:"number"},
-    {k:"tenure",     l:"TENURE",           ph:"e.g. 2 Years / 730 Days"},
-    {k:"buyDate",    l:"START DATE",       type:"date"},
-    {k:"matDate",    l:"MATURITY DATE",    type:"date"},
-    {k:"value",      l:"CURRENT VALUE / MATURITY AMT (₹)",ph:"e.g. 228420",  type:"number", req:true},
-    {k:"intType",    l:"INTEREST PAYOUT",  type:"select", opts:["Cumulative (at maturity)","Monthly","Quarterly","Half-Yearly","Annual"]},
-    {k:"autoRenew",  l:"AUTO-RENEWAL",     type:"select", opts:["Yes","No"]},
-    {k:"details",    l:"NOTES",            ph:"Joint holder, linked account, etc."},
+    {k:"bank",       l:"BANK / NBFC",           req:true, type:"select", opts:["IndusInd Bank","SBI","HDFC Bank","ICICI Bank","Axis Bank","Kotak Mahindra","Yes Bank","Canara Bank","IDBI Bank","Bank of India","PNB","Post Office","LIC HFL","Bajaj Finance","Shriram Finance","Other"]},
+    {k:"name",       l:"FD DESCRIPTION",        ph:"e.g. IndusInd Bank FD — 885551", req:true},
+    {k:"fdNo",       l:"DEPOSIT NUMBER",        ph:"e.g. 300959885551"},
+    {k:"principal",  l:"DEPOSIT AMOUNT (₹)",    ph:"e.g. 600000",    type:"number"},
+    {k:"intRate",    l:"RATE OF INTEREST (% p.a.)", ph:"e.g. 7.75", type:"number"},
+    {k:"tenure",     l:"DEPOSIT PERIOD",        ph:"e.g. 36 Months"},
+    {k:"buyDate",    l:"DEPOSIT START DATE",    type:"date"},
+    {k:"matDate",    l:"MATURITY DATE",         type:"date"},
+    {k:"value",      l:"MATURITY AMOUNT (₹)",   ph:"e.g. 600000",    type:"number", req:true},
+    {k:"intType",    l:"INTEREST INSTRUCTIONS", type:"select", opts:["Quarterly Payout","Monthly Payout","Half-Yearly Payout","Annual Payout","Cumulative (at maturity)"]},
+    {k:"autoRenew",  l:"MATURITY INSTRUCTIONS", type:"select", opts:["Renew Principal only","Renew Principal + Interest","Pay out on Maturity","No Auto-Renewal"]},
+    {k:"nominee",    l:"NOMINATION",            ph:"Nominee name (Y/N or name)"},
+    {k:"branch",     l:"BRANCH NAME",           ph:"e.g. SHRISHTI MIRA ROAD EAST"},
+    {k:"holder",     l:"DEPOSIT HOLDER",        ph:"e.g. SHARMILA DEVI SARAOGI"},
+    {k:"pan",        l:"PAN",                   ph:"e.g. AJAPS4849L"},
+    {k:"details",    l:"NOTES",                 ph:"Lien, linked account, mode of ops etc."},
   ],
   "Gold": [
     {k:"goldType",   l:"GOLD TYPE",        type:"select", opts:["Physical – Jewellery","Physical – Coins / Bars","Sovereign Gold Bond (SGB)","Gold ETF","Gold Mutual Fund","Digital Gold (MMTC-PAMP / Augmont)"], req:true},
